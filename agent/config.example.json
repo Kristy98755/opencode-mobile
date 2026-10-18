@@ -1,0 +1,12 @@
+{
+  "relayUrl": "wss://opencode-mobile-relay.itismynickname9.workers.dev",
+  "token": "REPLACE_WITH_PAIRING_TOKEN",
+  "opencode": {
+    "url": "http://127.0.0.1:4096",
+    "username": "",
+    "password": ""
+  },
+  "directory": "",
+  "autoStartServe": true,
+  "port": 4096
+}

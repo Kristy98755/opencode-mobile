@@ -1,0 +1,29 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.aab
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing
+keystore.jks
+keystore.properties
+
+# Secrets
+agent/config.json
+relay/.dev.vars
+.token.tmp
+
+# Node
+node_modules/
+*.log
+.wrangler/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
