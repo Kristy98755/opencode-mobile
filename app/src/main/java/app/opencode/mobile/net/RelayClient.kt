@@ -32,7 +32,7 @@ class RelayClient(private val scope: CoroutineScope) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = false }
 
     private val ok = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(45, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
@@ -140,8 +140,15 @@ class RelayClient(private val scope: CoroutineScope) {
                 d.complete(RelayResponse(status, body))
             }
             "ev" -> {
-                val payload = obj["d"] as? JsonObject ?: return
-                _events.tryEmit(payload)
+                when (val d = obj["d"]) {
+                    is JsonObject -> _events.tryEmit(d)
+                    is kotlinx.serialization.json.JsonArray -> {
+                        for (item in d) {
+                            if (item is JsonObject) _events.tryEmit(item)
+                        }
+                    }
+                    else -> {}
+                }
             }
             "presence" -> _agentOnline.value = (obj.int("agents") ?: 0) > 0
             "pong" -> {}

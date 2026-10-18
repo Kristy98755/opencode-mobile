@@ -622,7 +622,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (sessionStatusJob != null) return
         sessionStatusJob = viewModelScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(2500)
+                kotlinx.coroutines.delay(5000)
                 val sessionId = _chat.value.sessionId ?: continue
                 if (!_chat.value.busy) continue
                 runCatching {

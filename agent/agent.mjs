@@ -160,6 +160,45 @@ async function handleReq(msg) {
 async function startSse() {
   sseAbort?.abort();
   sseAbort = new AbortController();
+
+  // ---- batching: coalesce SSE events and ship them as one WS message ----
+  const FLUSH_MS = 250;
+  let evBuffer = [];
+  let evSeen = new Set();
+  let flushTimer = null;
+
+  const keyOf = (ev) => {
+    const props = ev.properties || ev.data;
+    if (ev.type === "message.part.updated" && props && props.part) return "part:" + props.part.id;
+    if (ev.type === "message.updated" && props && props.info) return "msg:" + props.info.id;
+    if ((ev.type === "session.updated" || ev.type === "session.created") && props && props.info)
+      return "sess:" + props.info.id + ":" + ev.type;
+    if (ev.type === "session.status" && props) return "stat:" + (props.sessionID || "");
+    return null;
+  };
+
+  const flushEvents = () => {
+    flushTimer = null;
+    if (evBuffer.length === 0) return;
+    const batch = evBuffer;
+    evBuffer = [];
+    evSeen = new Set();
+    wsSend({ t: "ev", d: batch });
+  };
+
+  const enqueue = (ev) => {
+    const key = keyOf(ev);
+    if (key) {
+      if (evSeen.has(key)) {
+        // last-writer-wins: drop the stale copy, keep position at the tail
+        evBuffer = evBuffer.filter((e) => keyOf(e) !== key);
+      }
+      evSeen.add(key);
+    }
+    evBuffer.push(ev);
+    if (!flushTimer) flushTimer = setTimeout(flushEvents, FLUSH_MS);
+  };
+
   const sendEvents = async () => {
     try {
       const headers = {};
@@ -189,8 +228,7 @@ async function startSse() {
           const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
           try {
-            const ev = JSON.parse(data);
-            wsSend({ t: "ev", d: ev });
+            enqueue(JSON.parse(data));
           } catch {
             /* skip malformed event */
           }
@@ -265,7 +303,7 @@ setInterval(() => {
     log("heartbeat send failed:", e.message);
     scheduleReconnect();
   }
-}, 25000);
+}, 45000);
 
 function scheduleReconnect() {
   if (!shouldRun) return;
