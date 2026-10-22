@@ -1,9 +1,16 @@
-package app.opencode.mobile.ui.components
+package kanami.isa.opencode.connect.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,37 +23,47 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.HourglassBottom
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.opencode.mobile.net.MessageWithParts
-import app.opencode.mobile.net.Part
-import app.opencode.mobile.net.str
-import app.opencode.mobile.ui.theme.Border
-import app.opencode.mobile.ui.theme.Surface1
-import app.opencode.mobile.ui.theme.TextSecondary
+import kanami.isa.opencode.connect.net.MessageWithParts
+import kanami.isa.opencode.connect.net.Part
+import kotlinx.coroutines.delay
+import kanami.isa.opencode.connect.net.str
+import kanami.isa.opencode.connect.ui.theme.Border
+import kanami.isa.opencode.connect.ui.theme.Surface1
+import kanami.isa.opencode.connect.ui.theme.TextSecondary
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -56,61 +73,222 @@ private val RedSoft = Color(0xFFF85149)
 private val YellowSoft = Color(0xFFD29922)
 
 @Composable
-fun ChatMessage(message: MessageWithParts) {
+fun ChatMessage(
+    message: MessageWithParts,
+    modifier: Modifier = Modifier,
+    shimmer: Boolean = false,
+    onExpand: (() -> Unit)? = null,
+) {
     val isUser = message.info.role == "user"
-    Column(modifier = Modifier.fillMaxWidth()) {
-        message.parts.forEach { part ->
-            when (part.type) {
-                "text" -> {
-                    if (!part.text.isNullOrBlank()) {
-                        if (isUser) UserText(part.text) else AssistantText(part.text)
+    SelectionContainer {
+        Column(modifier = modifier.fillMaxWidth()) {
+            if (message.truncated) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onExpand?.invoke() }
+                        .padding(bottom = 6.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.UnfoldMore,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "fragment shown — tap to load the rest",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                    )
+                }
+            }
+            if (!isUser && message.info.error != null) {
+                ErrorCard(
+                    text = message.info.error.str("message")
+                        ?: message.info.error.str("title")
+                        ?: "Error",
+                    onDismiss = {},
+                    dismissible = false,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            message.parts.forEach { part ->
+                when (part.type) {
+                    "text" -> {
+                        if (!part.text.isNullOrBlank()) {
+                            if (isUser) UserText(part.text, shimmer) else AssistantText(part.text)
+                            Spacer(Modifier.height(6.dp))
+                        }
+                    }
+                    "error" -> {
+                        ErrorCard(
+                            text = part.text
+                                ?: part.state?.str("message")
+                                ?: part.state?.str("title")
+                                ?: "Unknown error",
+                            onDismiss = {},
+                            dismissible = false,
+                        )
                         Spacer(Modifier.height(6.dp))
                     }
-                }
-                "reasoning" -> {
-                    if (!part.text.isNullOrBlank()) ReasoningCard(part.text, part.state)
-                    Spacer(Modifier.height(4.dp))
-                }
-                "tool" -> {
-                    ToolCard(part)
-                    Spacer(Modifier.height(4.dp))
-                }
-                "file" -> {
-                    Chip(
-                        icon = Icons.Outlined.AttachFile,
-                        label = part.filename ?: part.url ?: "file",
-                    )
-                    Spacer(Modifier.height(4.dp))
-                }
-                "patch" -> {
-                    val files = part.files.orEmpty()
-                    if (files.isNotEmpty()) {
+                    "reasoning" -> {
+                        if (!part.text.isNullOrBlank()) ReasoningCard(part.text, part.state)
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    "tool" -> {
+                        ToolCard(part)
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    "file" -> {
                         Chip(
-                            icon = Icons.Outlined.Code,
-                            label = files.joinToString(", ").ifEmpty { "patch" },
+                            icon = Icons.Outlined.AttachFile,
+                            label = part.filename ?: part.url ?: "file",
                         )
                         Spacer(Modifier.height(4.dp))
                     }
+                    "patch" -> {
+                        val files = part.files.orEmpty()
+                        if (files.isNotEmpty()) {
+                            Chip(
+                                icon = Icons.Outlined.Code,
+                                label = files.joinToString(", ").ifEmpty { "patch" },
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
+                    }
+                    "agent" -> Chip(icon = Icons.Outlined.Code, label = part.text ?: "agent")
+                    else -> {}
                 }
-                "agent" -> Chip(icon = Icons.Outlined.Code, label = part.text ?: "agent")
-                else -> {}
             }
         }
     }
 }
 
 @Composable
-private fun UserText(text: String) {
+private fun UserText(text: String, shimmer: Boolean = false) {
+    val transition = rememberInfiniteTransition(label = "userShimmer")
+    val progress by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmerProgress",
+    )
+    var size by remember { mutableStateOf(IntSize.Zero) }
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground,
+            Box(
                 modifier = Modifier
                     .fillMaxWidth(0.92f)
+                    .onSizeChanged { size = it }
+                    .background(Surface1, RoundedCornerShape(12.dp))
+                    .then(
+                        if (shimmer) Modifier.background(shimmerBrush(progress, size), RoundedCornerShape(12.dp))
+                        else Modifier
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Shown between "message sent" and the first token of the answer:
+ * italic *Processing* with a running ellipsis.
+ */
+@Composable
+fun ProcessingBubble(modifier: Modifier = Modifier) {
+    var dots by remember { mutableStateOf(1) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(380)
+            dots = if (dots >= 3) 1 else dots + 1
+        }
+    }
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(horizontalArrangement = Arrangement.Start, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
                     .background(Surface1, RoundedCornerShape(12.dp))
                     .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.HourglassBottom,
+                    contentDescription = null,
+                    tint = TextSecondary,
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = "Processing" + ".".repeat(dots),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontStyle = FontStyle.Italic,
+                    color = TextSecondary,
+                )
+            }
+        }
+    }
+}
+
+private fun shimmerBrush(progress: Float, size: IntSize): Brush {
+    if (size.width == 0) {
+        return Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+    }
+    val band = size.width * 0.6f
+    val x = progress * size.width - band
+    return Brush.linearGradient(
+        colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.30f), Color.Transparent),
+        start = Offset(x, 0f),
+        end = Offset(x + band, size.height.toFloat()),
+    )
+}
+
+@Composable
+fun ErrorCard(
+    text: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    dismissible: Boolean = true,
+) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(0x2EF85149), RoundedCornerShape(10.dp))
+            .border(BorderStroke(1.dp, RedSoft), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Icon(
+            Icons.Outlined.ErrorOutline,
+            contentDescription = null,
+            tint = RedSoft,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        if (dismissible) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Outlined.Clear,
+                contentDescription = "Dismiss",
+                tint = TextSecondary,
+                modifier = Modifier.size(16.dp).clickable { onDismiss() },
             )
         }
     }
@@ -142,7 +320,10 @@ private fun Chip(icon: ImageVector, label: String) {
 @Composable
 private fun ReasoningCard(text: String, state: JsonObject?) {
     val status = state?.str("status")
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(status == "running") }
+    LaunchedEffect(status) {
+        if (status == "running") expanded = true
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()

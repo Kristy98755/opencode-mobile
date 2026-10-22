@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui.theme
+package kanami.isa.opencode.connect.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme

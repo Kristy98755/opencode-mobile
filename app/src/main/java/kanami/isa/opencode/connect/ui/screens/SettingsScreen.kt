@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui.screens
+package kanami.isa.opencode.connect.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -42,24 +42,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.opencode.mobile.AppViewModel
-import app.opencode.mobile.ui.theme.Border
-import app.opencode.mobile.ui.theme.Surface1
-import app.opencode.mobile.ui.theme.Surface2
-import app.opencode.mobile.ui.theme.TextSecondary
+import kanami.isa.opencode.connect.AppViewModel
+import kanami.isa.opencode.connect.ui.theme.Border
+import kanami.isa.opencode.connect.ui.theme.Surface1
+import kanami.isa.opencode.connect.ui.theme.Surface2
+import kanami.isa.opencode.connect.ui.theme.TextSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
-    val providers by vm.providers.collectAsStateWithLifecycle()
     val agents by vm.agents.collectAsStateWithLifecycle()
-    val selectedProvider by vm.selectedProvider.collectAsStateWithLifecycle()
-    val selectedModel by vm.selectedModel.collectAsStateWithLifecycle()
     val selectedAgent by vm.selectedAgent.collectAsStateWithLifecycle()
     val relayState by vm.relayState.collectAsStateWithLifecycle()
     val agentOnline by vm.agentOnline.collectAsStateWithLifecycle()
 
-    var modelSheet by remember { mutableStateOf(false) }
     var agentSheet by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -85,14 +81,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            SectionTitle("Model")
-            SettingCard(
-                title = selectedModel.ifEmpty { "Default model" },
-                subtitle = selectedProvider.ifEmpty { "provider not selected" },
-                onClick = { modelSheet = true },
-            )
-
-            Spacer(Modifier.height(12.dp))
             SectionTitle("Agent")
             SettingCard(
                 title = selectedAgent.ifEmpty { "Default agent" },
@@ -119,8 +107,8 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                         Spacer(Modifier.weight(1f))
                         Text(
                             when {
-                                relayState is app.opencode.mobile.net.RelayState.Ready -> "connected"
-                                relayState is app.opencode.mobile.net.RelayState.Connecting -> "connecting…"
+                                relayState is kanami.isa.opencode.connect.net.RelayState.Ready -> "connected"
+                                relayState is kanami.isa.opencode.connect.net.RelayState.Connecting -> "connecting…"
                                 else -> "offline"
                             },
                             style = MaterialTheme.typography.labelMedium,
@@ -164,7 +152,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
-                    Text("OpenCode Mobile", style = MaterialTheme.typography.bodyLarge)
+                    Text("OpenCode Connect", style = MaterialTheme.typography.bodyLarge)
                     Text(
                         "Unofficial remote client for OpenCode.\nConnects through a self-hosted relay to the opencode server on your PC.",
                         style = MaterialTheme.typography.bodySmall,
@@ -174,58 +162,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(32.dp))
         }
-    }
-
-    if (modelSheet) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { modelSheet = false },
-            title = { Text("Choose model") },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                    val connected = providers?.connected.orEmpty()
-                    val list = providers?.all.orEmpty().filter { p ->
-                        connected.isEmpty() || p.id in connected || p.models.isNotEmpty()
-                    }
-                    if (list.isEmpty()) {
-                        Text("No providers found — check that opencode is running on your PC.", color = TextSecondary)
-                    }
-                    list.forEach { provider ->
-                        provider.models.values.sortedBy { it.name ?: it.id }.forEach { model ->
-                            val sel = provider.id == selectedProvider && model.id == selectedModel
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        vm.selectModel(provider.id, model.id)
-                                        modelSheet = false
-                                    }
-                                    .padding(vertical = 8.dp),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (sel) MaterialTheme.colorScheme.primary else Surface2,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(model.name ?: model.id, style = MaterialTheme.typography.bodyMedium)
-                                    Text(
-                                        provider.id,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = TextSecondary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { modelSheet = false }) { Text("Close") }
-            },
-        )
     }
 
     if (agentSheet) {

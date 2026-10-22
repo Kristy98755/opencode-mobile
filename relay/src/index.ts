@@ -33,7 +33,17 @@ export default {
     }
 
     if (url.pathname !== "/ws") {
-      return new Response("not found", { status: 404 });
+      if (url.pathname === "/" || url.pathname === "") {
+        return new Response(
+          JSON.stringify({
+            error: "websocket endpoint is /ws",
+            hint: "connect with ?role=client&token=<PAIRING_TOKEN> or ?role=agent&token=<PAIRING_TOKEN>",
+            health: "/health",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found (websocket endpoint is /ws)", { status: 404 });
     }
 
     const token = url.searchParams.get("token") ?? "";
@@ -119,6 +129,7 @@ export class RelayRoom implements DurableObject {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const text = typeof message === "string" ? message : new TextDecoder().decode(message);
+    console.log(`relay: msg from ${this.tagOf(ws)} chars=${text.length}`);
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(text) as Record<string, unknown>;
@@ -135,14 +146,32 @@ export class RelayRoom implements DurableObject {
 
   private async handleAgentMessage(ws: WebSocket, obj: Record<string, unknown>) {
     switch (obj["t"]) {
-      case "res":
-        this.broadcast({ t: "res", id: obj["id"], s: obj["s"], b: obj["b"] });
+      case "res": {
+        const payload = JSON.stringify(obj);
+        for (const client of this.clientSockets()) {
+          try {
+            client.send(payload);
+          } catch (e) {
+            console.log(
+              `relay: send res to client failed id=${String(obj["id"])} chars=${payload.length} err=${String(e)}`,
+            );
+          }
+        }
+        console.log(`relay: res id=${String(obj["id"])} chars=${payload.length} clients=${this.clientSockets().length}`);
         break;
+      }
       case "ev":
         this.broadcast({ t: "ev", d: obj["d"] });
         break;
       case "presence":
         this.broadcastPresence();
+        break;
+      case "ping":
+        try {
+          ws.send(JSON.stringify({ t: "pong" }));
+        } catch {
+          /* socket dying, ignore */
+        }
         break;
       case "pong":
         break;

@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui.screens
+package kanami.isa.opencode.connect.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -32,8 +32,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.opencode.mobile.AppViewModel
-import app.opencode.mobile.net.RelayState
+import kanami.isa.opencode.connect.AppViewModel
+import kanami.isa.opencode.connect.net.RelayState
 
 @Composable
 fun ConnectScreen(vm: AppViewModel, onConnected: () -> Unit) {
@@ -45,7 +45,7 @@ fun ConnectScreen(vm: AppViewModel, onConnected: () -> Unit) {
     var initialized by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val cfg = app.opencode.mobile.data.SettingsRepository(context).relayConfig()
+        val cfg = kanami.isa.opencode.connect.data.SettingsRepository(context).relayConfig()
         url = cfg.first.ifEmpty { "wss://opencode-relay.YOUR_SUBDOMAIN.workers.dev" }
         token = cfg.second
         initialized = true
@@ -70,7 +70,7 @@ fun ConnectScreen(vm: AppViewModel, onConnected: () -> Unit) {
             modifier = Modifier.size(72.dp),
         )
         Spacer(Modifier.height(12.dp))
-        Text("OpenCode Mobile", style = MaterialTheme.typography.headlineMedium)
+        Text("OpenCode Connect", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(4.dp))
         Text(
             "Remote control for your desktop OpenCode",

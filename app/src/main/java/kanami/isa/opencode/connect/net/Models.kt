@@ -1,4 +1,4 @@
-package app.opencode.mobile.net
+package kanami.isa.opencode.connect.net
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -68,6 +68,9 @@ data class MessageInfo(
     val sessionID: String = "",
     val role: String = "",
     val time: JsonObject? = null,
+    // "tool-calls" while a step chain keeps going, "stop"/"error" at the end —
+    // the only reliable turn-finish signal for host-run turns (no SSE for those).
+    val finish: String? = null,
     val error: JsonObject? = null,
     val agent: String? = null,
     val modelID: String? = null,
@@ -77,9 +80,12 @@ data class MessageInfo(
     val summary: JsonObject? = null,
 )
 
+@Serializable
 data class MessageWithParts(
     val info: MessageInfo,
     val parts: List<Part>,
+    val truncated: Boolean = false,
+    val fullChars: Int = 0,
 )
 
 @Serializable

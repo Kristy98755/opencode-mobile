@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui.components
+package kanami.isa.opencode.connect.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll

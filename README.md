@@ -1,70 +1,115 @@
-# OpenCode Mobile
+# OpenCode Connect
 
-Unofficial open-source Android remote client for [OpenCode](https://opencode.ai).
-It acts as "eyes and hands" for the OpenCode instance running on your PC:
-sessions, live streaming chat (text, reasoning, tool calls), permission and
-question prompts, model/agent selection, and a project file browser.
+Неофициальный open-source Android-клиент для [OpenCode](https://opencode.ai).
+Телефон становится «глазами и руками» для экземпляра OpenCode, который работает
+на вашем ПК: чат с живой стримингом, сессии, разрешения, выбор модели и
+просмотр файлов — всё удалённо.
 
 ```
-Android app  <──WebSocket──>  Cloudflare relay  <──WebSocket──>  PC agent  <──HTTP/SSE──>  opencode serve
+Android-приложение  <──WebSocket──>  Cloudflare relay  <──WebSocket──>  PC-агент (Node.js)  <──HTTP/SSE──>  opencode serve
 ```
 
-- **app/** — Kotlin + Jetpack Compose Android client (package `app.opencode.mobile`)
-- **relay/** — Cloudflare Worker + Durable Object that pairs one phone with one PC (pairing token)
-- **agent/** — zero-dependency Node.js bridge that talks to the local `opencode serve` API and forwards its `/event` SSE stream
+Телефон **не видит** ваших учётных данных OpenCode — их видит только агент на
+ПК. Relay просто пересылит трафик между двумя сокетами с общим pairing-токеном
+и ничего не хранит.
 
-## 1. Deploy the relay
+## Возможности
+
+- живой стриминг чата: текст, reasoning, вызовы инструментов, статусы активности
+- список сессий, переключение между проектами, индикаторы активных сессий
+- экраны разрешений (Allow/Deny) и вопросы агента прямо с телефона
+- выбор модели и агента
+- просмотр файлов: в чате — рабочая директория этой сессии, с главного экрана —
+  домашняя папка (`~` раскрывается агентом); текстовые превью до 2 МБ,
+  бинарники помечаются
+- уведомления о новых репликах ассистента
+- автоматическое переподключение к relay и фоновый опрос сессий
+- агент на ПК: автозапуск `opencode serve`, вотчдог, автозагрузка через задачу
+  Windows и иконка в трее вместо консоли
+
+## Состав репозитория
+
+| Папка | Что это |
+|---|---|
+| `app/` | Android-клиент, Kotlin + Jetpack Compose (пакет `kanami.isa.opencode.connect`) |
+| `agent/` | нулевая-зависимость Node.js-мост к локальному `opencode serve`; плюс `ocmtray.cs` — трей-обёртка без консоли |
+| `relay/` | Cloudflare Worker + Durable Object: парует один телефон с одним ПК по pairing-токену |
+
+## Установка (короткий путь)
+
+1. Скачайте `OpenCodeConnect-*.apk` из **Releases** и установите
+   (Android попросит разрешить установку из неизвестных источников).
+2. Откройте приложение, введите relay URL и pairing token, нажмите **Connect**.
+
+> Если раньше стояло приложение с пакетом `app.opencode.mobile` — это уже
+> другое приложение. Новое встанет отдельной иконкой, старое можно удалить;
+> relay URL и pairing token нужно ввести заново.
+
+## Настройка с нуля
+
+### 1. Разверните relay
 
 ```bash
 cd relay
 npx wrangler deploy
-npx wrangler secret put PAIRING_TOKEN   # paste any random secret, e.g. 32 hex chars
+npx wrangler secret put PAIRING_TOKEN   # любая случайная строка, напр. 32 hex-символа
 ```
 
-Note the worker URL, e.g. `https://opencode-mobile-relay.<account>.workers.dev`.
+Запомните выданный URL вида `https://opencode-mobile-relay.<account>.workers.dev`.
 
-## 2. Run the agent on your PC
+### 2. Запустите агента на ПК
 
-Requires Node.js 20+ and `opencode` installed.
+Нужны Node.js 20+ и установленный `opencode`.
 
 ```bash
 cd agent
-cp config.example.json config.json
-# edit config.json: relayUrl, token, opencode.url / username / password
+copy config.example.json config.json
+# раскомментируйте и заполните: relayUrl, token, opencode.url / username / password
 node agent.mjs
 ```
 
-Config fields:
+Автозагрузка (переживает перезагрузку и сон):
 
-| Field | Meaning |
+```powershell
+powershell -ExecutionPolicy Bypass -File agent\install_agent_task.ps1
+```
+
+Создаёт задачу планировщика `OpenCodeConnectAgent`, которая на входе в систему
+поднимает `ocmtray.exe` — иконку в трее: зелёная точка = агент работает,
+красная = остановлен. Меню по правой кнопке: Start / Stop / Restart agent,
+Open log, Quit. Окно консоли не появляется ни у чего.
+
+Поля `config.json`:
+
+| Поле | Значение |
 |---|---|
-| `relayUrl` | your deployed worker URL (https/wss) |
-| `token` | the pairing token you set as `PAIRING_TOKEN` |
-| `opencode.url` | local `opencode serve` base URL (default `http://127.0.0.1:4096`) |
-| `opencode.username` / `opencode.password` | Basic-auth credentials of the serve instance (optional) |
-| `autoStartServe` | spawn `opencode serve --port <port>` automatically if it is not running |
-| `directory` | project directory used as the agent's working directory hint |
+| `relayUrl` | URL вашего relay (https/wss) |
+| `token` | pairing-токен, тот же, что в `PAIRING_TOKEN` |
+| `opencode.url` | базовый URL локального `opencode serve` (по умолчанию `http://127.0.0.1:4096`) |
+| `opencode.username` / `opencode.password` | Basic-auth serve (если включён) |
+| `autoStartServe` | сам поднимать `opencode serve`, если он не запущен |
+| `directory` | рабочая директория-подсказка для агента |
 
-The agent is the only piece that ever sees your OpenCode credentials; the
-phone only ever sees the relay URL and pairing token.
+### 3. Подключите телефон
 
-## 3. Install the app
+В приложении: relay URL + pairing token → **Connect** → создайте сессию.
 
-- Debug build: `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
-- Release build: `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`
-  (requires a keystore; see `app/build.gradle.kts` `RELEASE_*` properties)
+## Сборка клиента из исходников
 
-Open the app, enter the relay URL and pairing token, tap **Connect**, then
-start a session.
+```bash
+./gradlew assembleRelease          # app/build/outputs/apk/release/app-release.apk
+```
 
-## Security notes
+Для подписания задайте свойства `RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`,
+`RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD` (см. `app/build.gradle.kts`).
 
-- The relay only forwards traffic between sockets that present the pairing
-  token; it stores nothing.
-- Use HTTPS/WSS endpoints only.
-- Anyone with the pairing token can control your OpenCode instance — treat it
-  like a password.
+## Безопасность
 
-## License
+- relay только пересылает трафик между сокетами с верным pairing-токеном;
+  ничего не сохраняет
+- используйте только HTTPS/WSS
+- владелец pairing-токена может управлять вашим OpenCode — храните его как пароль
+
+## Лицензия
 
 MIT

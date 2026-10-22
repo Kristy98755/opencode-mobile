@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui.screens
+package kanami.isa.opencode.connect.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -45,11 +45,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.opencode.mobile.AppViewModel
-import app.opencode.mobile.ui.components.MarkdownText
-import app.opencode.mobile.ui.theme.Border
-import app.opencode.mobile.ui.theme.Surface1
-import app.opencode.mobile.ui.theme.TextSecondary
+import kanami.isa.opencode.connect.AppViewModel
+import kanami.isa.opencode.connect.ui.components.MarkdownText
+import kanami.isa.opencode.connect.ui.theme.Border
+import kanami.isa.opencode.connect.ui.theme.Surface1
+import kanami.isa.opencode.connect.ui.theme.TextSecondary
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)

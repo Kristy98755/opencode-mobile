@@ -1,15 +1,17 @@
-package app.opencode.mobile.net
+package kanami.isa.opencode.connect.net
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -121,12 +123,18 @@ class RelayClient(private val scope: CoroutineScope) {
     }
 
     private fun buildWsUrl(base: String, token: String): String {
-        var u = base
+        var u = base.trim()
         u = u.replaceFirst(Regex("^http://"), "ws://")
         u = u.replaceFirst(Regex("^https://"), "wss://")
         if (!u.startsWith("ws://") && !u.startsWith("wss://")) u = "wss://$u"
-        val sep = if (u.contains("?")) "&" else "?"
-        return "$u${sep}role=client&token=$token"
+        // drop any query/hash the user might have pasted
+        val q = u.indexOf('?')
+        if (q >= 0) u = u.substring(0, q)
+        val h = u.indexOf('#')
+        if (h >= 0) u = u.substring(0, h)
+        while (u.endsWith("/")) u = u.dropLast(1)
+        if (!u.endsWith("/ws")) u += "/ws"
+        return "$u?role=client&token=$token"
     }
 
     private fun handleMessage(text: String) {
@@ -160,7 +168,7 @@ class RelayClient(private val scope: CoroutineScope) {
         path: String,
         body: JsonElement? = null,
         timeoutSeconds: Long = 45L,
-    ): RelayResponse {
+    ): RelayResponse = withContext(Dispatchers.IO) {
         val socket = ws ?: throw RelayException("not connected")
         if (_state.value !is RelayState.Ready) throw RelayException("not connected")
         val id = idGen.incrementAndGet().toString()
@@ -185,7 +193,7 @@ class RelayClient(private val scope: CoroutineScope) {
         if (result.status == 503) {
             throw RelayException("PC agent offline")
         }
-        return result
+        result
     }
 
     private fun failAllPending(reason: String) {

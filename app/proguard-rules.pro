@@ -4,11 +4,11 @@
 -keepclasseswithmembers class kotlinx.serialization.json.** { kotlinx.serialization.KSerializer serializer(...); }
 -dontwarn kotlinx.serialization.**
 
--keep,includedescriptorclasses class app.opencode.mobile.**$$serializer { *; }
--keepclassmembers class app.opencode.mobile.** {
+-keep,includedescriptorclasses class kanami.isa.opencode.connect.**$$serializer { *; }
+-keepclassmembers class kanami.isa.opencode.connect.** {
     *** Companion;
 }
--keepclasseswithmembers class app.opencode.mobile.** {
+-keepclasseswithmembers class kanami.isa.opencode.connect.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 

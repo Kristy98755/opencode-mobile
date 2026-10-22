@@ -1,7 +1,8 @@
-package app.opencode.mobile.data
+package kanami.isa.opencode.connect.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -17,6 +18,7 @@ object Keys {
     val AGENT = stringPreferencesKey("agent")
     val PROVIDER = stringPreferencesKey("provider")
     val MODEL = stringPreferencesKey("model")
+    val PROJECTS_MODE = booleanPreferencesKey("projects_mode")
 }
 
 class SettingsRepository(private val context: Context) {
@@ -50,5 +52,26 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveAgent(agent: String) {
         context.dataStore.edit { it[Keys.AGENT] = agent }
+    }
+
+    suspend fun projectsMode(): Boolean = ds.first()[Keys.PROJECTS_MODE] ?: false
+
+    suspend fun saveProjectsMode(value: Boolean) {
+        context.dataStore.edit { it[Keys.PROJECTS_MODE] = value }
+    }
+
+    private fun draftKey(sessionId: String) = stringPreferencesKey("draft_$sessionId")
+
+    suspend fun getDraft(sessionId: String): String {
+        if (sessionId.isEmpty()) return ""
+        return ds.first()[draftKey(sessionId)] ?: ""
+    }
+
+    suspend fun setDraft(sessionId: String, text: String) {
+        if (sessionId.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val key = draftKey(sessionId)
+            if (text.isEmpty()) prefs.remove(key) else prefs[key] = text
+        }
     }
 }

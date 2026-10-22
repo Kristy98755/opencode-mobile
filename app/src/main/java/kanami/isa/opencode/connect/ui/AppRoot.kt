@@ -1,4 +1,4 @@
-package app.opencode.mobile.ui
+package kanami.isa.opencode.connect.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Box
@@ -11,7 +11,9 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -21,13 +23,15 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import app.opencode.mobile.AppViewModel
-import app.opencode.mobile.net.RelayState
-import app.opencode.mobile.ui.screens.ChatScreen
-import app.opencode.mobile.ui.screens.ConnectScreen
-import app.opencode.mobile.ui.screens.FilesScreen
-import app.opencode.mobile.ui.screens.SessionsScreen
-import app.opencode.mobile.ui.screens.SettingsScreen
+import kanami.isa.opencode.connect.AppViewModel
+import kanami.isa.opencode.connect.net.RelayState
+import kanami.isa.opencode.connect.ui.components.PermissionDialog
+import kanami.isa.opencode.connect.ui.components.QuestionDialog
+import kanami.isa.opencode.connect.ui.screens.ChatScreen
+import kanami.isa.opencode.connect.ui.screens.ConnectScreen
+import kanami.isa.opencode.connect.ui.screens.FilesScreen
+import kanami.isa.opencode.connect.ui.screens.SessionsScreen
+import kanami.isa.opencode.connect.ui.screens.SettingsScreen
 
 @Composable
 fun AppRoot(vm: AppViewModel, relayState: RelayState) {
@@ -41,16 +45,40 @@ fun AppRoot(vm: AppViewModel, relayState: RelayState) {
         }
     }
 
-    val startDest = if (relayState is RelayState.Ready) "sessions" else "connect"
+    var hasCreds by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) { hasCreds = vm.hasSavedCredentials() }
+
+    val openSessionId by vm.openSessionRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(hasCreds, relayState, openSessionId) {
+        val sid = openSessionId ?: return@LaunchedEffect
+        if (hasCreds != true) return@LaunchedEffect
+        val from = nav.currentDestination?.route ?: return@LaunchedEffect
+        if (from == "connect" && relayState !is RelayState.Ready) return@LaunchedEffect
+        vm.clearOpenSessionRequest()
+        if (from == "chat/$sid") return@LaunchedEffect
+        nav.navigate("chat/$sid") {
+            launchSingleTop = true
+            if (from == "connect") popUpTo("connect") { inclusive = true }
+        }
+    }
 
     LaunchedEffect(relayState) {
-        if (relayState is RelayState.Ready) {
+        if (relayState is RelayState.Ready && nav.currentDestination?.route == "connect") {
             nav.navigate("sessions") {
                 popUpTo("connect") { inclusive = true }
                 launchSingleTop = true
             }
         }
     }
+
+    if (hasCreds == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+    val startDest = if (hasCreds == true) "sessions" else "connect"
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
@@ -115,5 +143,24 @@ fun AppRoot(vm: AppViewModel, relayState: RelayState) {
                 }
             }
         }
+    }
+
+    // Questions and permissions are shown app-wide: the agent may ask while the
+    // user is on the session list, in files or in settings.
+    val permission by vm.permission.collectAsStateWithLifecycle()
+    val question by vm.question.collectAsStateWithLifecycle()
+    permission?.let { req ->
+        PermissionDialog(
+            req = req,
+            onReply = { reply, msg -> vm.answerPermission(reply, msg) },
+            onDismiss = { vm.answerPermission("reject", null) },
+        )
+    }
+    question?.let { req ->
+        QuestionDialog(
+            req = req,
+            onAnswer = { vm.answerQuestion(it) },
+            onReject = { vm.rejectQuestion() },
+        )
     }
 }
