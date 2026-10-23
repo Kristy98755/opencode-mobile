@@ -306,6 +306,22 @@ async function handleReq(msg) {
     await handleFileContent(id, p, started);
     return;
   }
+  if (method === "GET" && fp === "/file/raw") {
+    await handleFileRaw(id, p, started);
+    return;
+  }
+  if (method === "POST" && fp === "/file/move") {
+    await handleFileTransfer(id, body, started, false);
+    return;
+  }
+  if (method === "POST" && fp === "/file/copy") {
+    await handleFileTransfer(id, body, started, true);
+    return;
+  }
+  if (method === "POST" && fp === "/file/delete") {
+    await handleFileDelete(id, body, started);
+    return;
+  }
 
   try {
     // prompt blocks until the whole turn finishes (turns here run for tens of
@@ -574,12 +590,16 @@ async function handleSessionStatus(id, started) {
 
 const FILE_PREVIEW_MAX = 2 * 1024 * 1024;
 
+function resolveFsAbs(raw) {
+  const dir = String(raw || "");
+  if (dir === "~") return os.homedir();
+  if (dir.startsWith("~/") || dir.startsWith("~\\")) return path.join(os.homedir(), dir.slice(2));
+  return dir;
+}
+
 function resolveFsPath(p) {
   const q = new URLSearchParams(p.split("?")[1] || "");
-  let dir = q.get("path") || "";
-  if (dir === "~") dir = os.homedir();
-  else if (dir.startsWith("~/") || dir.startsWith("~\\")) dir = path.join(os.homedir(), dir.slice(2));
-  return dir;
+  return resolveFsAbs(q.get("path") || "");
 }
 
 async function handleFileList(id, p, started) {
@@ -629,6 +649,232 @@ async function handleFileContent(id, p, started) {
   } catch (e) {
     wsSend({ t: "res", id, s: 500, b: { message: e.message || String(e) } });
     log("res ->", id, 500, "file-content error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+// ---- file operations (unjailed; rm goes only to the recycle bin) ----------
+// The phone gets a minimal unix-ish toolbox: mv/ren, cp, rm and chunked
+// download. Hard rules: NTFS ACLs are NEVER touched (no chmod, no chown, no
+// takeown — nothing permission-shaped ever runs), and `rm` never destroys
+// anything: the target is handed to the Windows Recycle Bin through the shell
+// recycle API (PowerShell + Microsoft.VisualBasic), so every deletion stays
+// restorable on the PC. If the recycle API refuses (locked file, UNC path),
+// the request fails loudly instead of falling back to a permanent delete.
+
+const DOWNLOAD_CHUNK = 64 * 1024;
+
+function psLiteral(s) {
+  return "'" + String(s).replace(/'/g, "''") + "'";
+}
+
+function runPowerShell(script, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const exe = path.join(
+      process.env.SystemRoot || "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const child = spawn(
+      exe,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let out = "";
+    let err = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+      reject(new Error("powershell timeout after " + timeoutMs + "ms"));
+    }, timeoutMs);
+    child.stdout.on("data", (d) => {
+      out += d;
+    });
+    child.stderr.on("data", (d) => {
+      err += d;
+    });
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else {
+        reject(
+          new Error((err || out || "powershell exited with code " + code).trim().slice(0, 500)),
+        );
+      }
+    });
+  });
+}
+
+async function targetExists(p) {
+  try {
+    await fs.promises.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function handleFileTransfer(id, body, started, isCopy) {
+  const from = path.normalize(resolveFsAbs(String((body && body.from) || "")));
+  const to = path.normalize(resolveFsAbs(String((body && body.to) || "")));
+  const kind = isCopy ? "copy" : "move";
+  if (!from || from === "." || !to || to === ".") {
+    wsSend({ t: "res", id, s: 400, b: { message: "from and to are required" } });
+    return;
+  }
+  if (from === to) {
+    wsSend({ t: "res", id, s: 400, b: { message: "source and destination are the same" } });
+    return;
+  }
+  if (to.startsWith(from + path.sep)) {
+    wsSend({ t: "res", id, s: 400, b: { message: "destination is inside the source" } });
+    return;
+  }
+  try {
+    if (!(await targetExists(from))) {
+      wsSend({ t: "res", id, s: 404, b: { message: "source not found: " + from } });
+      return;
+    }
+    if (await targetExists(to)) {
+      wsSend({ t: "res", id, s: 409, b: { message: "destination already exists: " + to } });
+      return;
+    }
+    if (isCopy) {
+      await fs.promises.cp(from, to, { recursive: true, force: false, errorOnExist: true });
+    } else {
+      try {
+        await fs.promises.rename(from, to);
+      } catch (e) {
+        if (e && e.code === "EXDEV") {
+          // cross-volume move: copy first, then drop the source — the data
+          // exists at the destination, nothing is lost
+          await fs.promises.cp(from, to, { recursive: true, force: false, errorOnExist: true });
+          await fs.promises.rm(from, { recursive: true });
+        } else {
+          throw e;
+        }
+      }
+    }
+    wsSend({ t: "res", id, s: 200, b: { ok: true, op: kind } });
+    log("res ->", id, 200, "file-" + kind, from, "->", to, "ms=" + (Date.now() - started));
+  } catch (e) {
+    const code = e && e.code === "EEXIST" ? 409 : 500;
+    wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
+    log("res ->", id, code, "file-" + kind + " error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+async function handleFileDelete(id, body, started) {
+  const target = path.normalize(resolveFsAbs(String((body && body.path) || "")));
+  if (!target || target === ".") {
+    wsSend({ t: "res", id, s: 400, b: { message: "path is required" } });
+    return;
+  }
+  if (path.resolve(target) === path.parse(path.resolve(target)).root) {
+    wsSend({ t: "res", id, s: 400, b: { message: "refusing to delete a drive root" } });
+    return;
+  }
+  try {
+    const st = await fs.promises.stat(target);
+    const fn = st.isDirectory() ? "DeleteDirectory" : "DeleteFile";
+    const script =
+      "$ErrorActionPreference='Stop';" +
+      "Add-Type -AssemblyName Microsoft.VisualBasic;" +
+      "[Microsoft.VisualBasic.FileIO.FileSystem]::" +
+      fn +
+      "(" +
+      psLiteral(target) +
+      ",'OnlyErrorDialogs','SendToRecycleBin')";
+    await runPowerShell(script, 180000);
+    wsSend({ t: "res", id, s: 200, b: { ok: true, method: "recycle-bin" } });
+    log("res ->", id, 200, "file-delete (recycle bin)", target, "ms=" + (Date.now() - started));
+  } catch (e) {
+    const code = e && e.code === "ENOENT" ? 404 : 500;
+    wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
+    log("res ->", id, code, "file-delete error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+async function handleFileRaw(id, p, started) {
+  const file = path.normalize(resolveFsPath(p));
+  if (!file || file === ".") {
+    wsSend({ t: "res", id, s: 400, b: { message: "path is required" } });
+    return;
+  }
+  const q = new URLSearchParams(p.split("?")[1] || "");
+  const offset = Math.max(parseInt(q.get("offset") || "0", 10) || 0, 0);
+  const len = Math.min(
+    Math.max(parseInt(q.get("len") || String(DOWNLOAD_CHUNK), 10) || DOWNLOAD_CHUNK, 1),
+    DOWNLOAD_CHUNK,
+  );
+  try {
+    const st = await fs.promises.stat(file);
+    if (st.isDirectory()) {
+      wsSend({ t: "res", id, s: 400, b: { message: "not a file: " + file } });
+      return;
+    }
+    const name = path.basename(file);
+    if (offset >= st.size) {
+      wsSend({ t: "res", id, s: 200, b: { name, total: st.size, offset, data: "", eof: true } });
+      return;
+    }
+    const fh = await fs.promises.open(file, "r");
+    let read = 0;
+    let buf = null;
+    try {
+      buf = Buffer.alloc(len);
+      ({ bytesRead: read } = await fh.read(buf, 0, len, offset));
+    } finally {
+      await fh.close();
+    }
+    wsSend({
+      t: "res",
+      id,
+      s: 200,
+      b: {
+        name,
+        total: st.size,
+        offset,
+        data: buf.subarray(0, read).toString("base64"),
+        eof: offset + read >= st.size,
+      },
+    });
+    log(
+      "res ->",
+      id,
+      200,
+      "file-raw",
+      offset + "/" + st.size,
+      "read=" + read,
+      "ms=" + (Date.now() - started),
+    );
+  } catch (e) {
+    const code = e && e.code === "ENOENT" ? 404 : 500;
+    wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
+    log("res ->", id, code, "file-raw error:", e.message, "ms=" + (Date.now() - started));
   }
 }
 

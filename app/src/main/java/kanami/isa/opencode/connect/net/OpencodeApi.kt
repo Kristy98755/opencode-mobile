@@ -292,6 +292,41 @@ class OpencodeApi(private val relay: RelayClient) {
         call("GET", "/file/content?path=" + encodeQuery(path))
     )
 
+    suspend fun moveFile(from: String, to: String) = fileTransfer("/file/move", from, to)
+
+    suspend fun copyFile(from: String, to: String) = fileTransfer("/file/copy", from, to)
+
+    private suspend fun fileTransfer(op: String, from: String, to: String) {
+        call(
+            "POST",
+            op,
+            buildJsonObject {
+                put("from", from)
+                put("to", to)
+            },
+            timeoutSeconds = 120L,
+        )
+    }
+
+    /** rm — the agent only ever lands it in the Windows recycle bin, never a hard delete. */
+    suspend fun deleteFile(path: String) {
+        call(
+            "POST",
+            "/file/delete",
+            buildJsonObject { put("path", path) },
+            timeoutSeconds = 180L,
+        )
+    }
+
+    /** Next base64 chunk of a file for the download loop (`eof` ends it). */
+    suspend fun fileChunk(path: String, offset: Long, len: Int = 65536): FileChunk = decode(
+        call(
+            "GET",
+            "/file/raw?path=" + encodeQuery(path) + "&offset=$offset&len=$len",
+            timeoutSeconds = 60L,
+        )
+    )
+
     suspend fun replyPermission(requestId: String, reply: String, message: String? = null) {
         val body = buildJsonObject {
             put("reply", reply)

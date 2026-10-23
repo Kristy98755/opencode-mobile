@@ -137,6 +137,16 @@ data class FileContent(
     val diff: String? = null,
 )
 
+/** One base64 chunk of a file streamed off the PC (`GET /file/raw`). */
+@Serializable
+data class FileChunk(
+    val name: String = "",
+    val total: Long = 0,
+    val offset: Long = 0,
+    val data: String = "",
+    val eof: Boolean = false,
+)
+
 @Serializable
 data class PathInfo(
     val home: String = "",

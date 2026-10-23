@@ -97,6 +97,21 @@ data class ViewerState(
     val binary: Boolean,
 )
 
+/** Copy/move held while the browser walks to the destination folder. */
+data class PendingOp(
+    val kind: String, // "copy" | "move"
+    val from: String,
+    val name: String,
+)
+
+data class DownloadUiState(
+    val name: String = "",
+    val total: Long = 0,
+    val done: Long = 0,
+    val running: Boolean = true,
+    val error: String? = null,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settings = SettingsRepository(application)
@@ -123,6 +138,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _viewer = MutableStateFlow<ViewerState?>(null)
     val viewer: StateFlow<ViewerState?> = _viewer.asStateFlow()
+
+    private val _pendingOp = MutableStateFlow<PendingOp?>(null)
+    val pendingOp: StateFlow<PendingOp?> = _pendingOp.asStateFlow()
+
+    private val _download = MutableStateFlow<DownloadUiState?>(null)
+    val download: StateFlow<DownloadUiState?> = _download.asStateFlow()
+
+    private val _fileOpBusy = MutableStateFlow(false)
+    val fileOpBusy: StateFlow<Boolean> = _fileOpBusy.asStateFlow()
+
+    private var downloadJob: Job? = null
 
     private val _providers = MutableStateFlow<ProvidersResponse?>(null)
     val providers: StateFlow<ProvidersResponse?> = _providers.asStateFlow()
@@ -1145,7 +1171,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun goUpDir() {
         val cur = _files.value.path
-        val parent = java.io.File(cur).parent ?: return
+        // NOT java.io.File: on Android it splits on '/', so for the agent's
+        // "C:\..." paths getParent() is null and going up silently did nothing.
+        val parent = pcParent(cur)?.takeIf { it != cur } ?: return
         loadDir(parent)
     }
 
@@ -1166,6 +1194,175 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeViewer() {
         _viewer.value = null
+    }
+
+    private fun absOf(node: FileNode): String =
+        if (node.absolute.isNotEmpty()) node.absolute
+        else pcJoin(node.path, node.name)
+
+    fun startPendingOp(kind: String, node: FileNode) {
+        _pendingOp.value = PendingOp(kind, absOf(node), node.name)
+        toast(if (kind == "copy") "Copy — pick a folder, then Copy here" else "Move — pick a folder, then Move here")
+    }
+
+    fun cancelPendingOp() {
+        _pendingOp.value = null
+    }
+
+    /** Paste the held copy/move into the directory the browser shows right now. */
+    fun pasteHere() {
+        val op = _pendingOp.value ?: return
+        val dir = _files.value.path
+        if (dir.isEmpty()) return
+        val to = pcJoin(dir, op.name)
+        runFileOp(if (op.kind == "copy") "Copied" else "Moved") {
+            if (op.kind == "copy") api.copyFile(op.from, to) else api.moveFile(op.from, to)
+            _pendingOp.value = null
+        }
+    }
+
+    fun renameFile(node: FileNode, newName: String) {
+        val from = absOf(node)
+        val parent = pcParent(from)
+        if (parent == null) {
+            toast("Rename: cannot resolve the parent directory")
+            return
+        }
+        runFileOp("Renamed") { api.moveFile(from, pcJoin(parent, newName)) }
+    }
+
+    /** rm — the agent only ever moves the target into the Windows recycle bin. */
+    fun deleteFile(node: FileNode) {
+        runFileOp("Deleted to recycle bin") { api.deleteFile(absOf(node)) }
+    }
+
+    private fun runFileOp(success: String, block: suspend () -> Unit) {
+        if (_fileOpBusy.value) return
+        viewModelScope.launch {
+            _fileOpBusy.value = true
+            try {
+                block()
+                toast(success)
+                loadDir(_files.value.path)
+            } catch (e: Exception) {
+                toastError("File op", e)
+            } finally {
+                _fileOpBusy.value = false
+            }
+        }
+    }
+
+    /** Streams the file off the PC in base64 chunks into the SAF document the picker created (Android 8-9). */
+    fun downloadFile(node: FileNode, uri: android.net.Uri) = startDownload(node, uri)
+
+    /**
+     * Android 10+: save straight into Download/OpenCodeConnect without asking —
+     * MediaStore lets an app insert its own files into the public Downloads
+     * collection with no permission and no picker.
+     */
+    fun downloadFile(node: FileNode) = startDownload(node, null)
+
+    private fun startDownload(node: FileNode, uriOrNull: android.net.Uri?) {
+        downloadJob?.cancel()
+        val abs = absOf(node)
+        val name = node.name
+        _download.value = DownloadUiState(name = name, running = true)
+        downloadJob = viewModelScope.launch {
+            val cr = getApplication<Application>().contentResolver
+            var uri: android.net.Uri? = uriOrNull
+            try {
+                if (uri == null) {
+                    val finalName = uniqueDownloadName(cr, name)
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, finalName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, guessMime(finalName))
+                        put(
+                            android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                            android.os.Environment.DIRECTORY_DOWNLOADS + "/OpenCodeConnect",
+                        )
+                        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    uri = cr.insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        values,
+                    ) ?: throw java.io.IOException("cannot create the file in Download/OpenCodeConnect")
+                }
+                val dest = uri ?: throw java.io.IOException("cannot create the destination file")
+                val out = cr.openOutputStream(dest)
+                    ?: throw java.io.IOException("cannot open the destination")
+                out.use { stream ->
+                    var offset = 0L
+                    while (true) {
+                        val chunk = api.fileChunk(abs, offset)
+                        val bytes = android.util.Base64.decode(chunk.data, android.util.Base64.DEFAULT)
+                        if (bytes.isNotEmpty()) stream.write(bytes)
+                        offset += bytes.size
+                        _download.value = _download.value?.copy(total = chunk.total, done = offset)
+                        if (chunk.eof || bytes.isEmpty()) break
+                    }
+                    stream.flush()
+                }
+                if (uriOrNull == null) {
+                    // publish the pending MediaStore row so other apps can see it
+                    val publish = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                    }
+                    cr.update(dest, publish, null, null)
+                    _download.value = null
+                    toast("Saved: Download/OpenCodeConnect/$name")
+                } else {
+                    _download.value = null
+                    toast("Saved: $name")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // cancelled mid-flight: drop the partial file we created
+                if (uri != null) runCatching { cr.delete(uri, null, null) }
+                _download.value = null
+                throw e
+            } catch (e: Exception) {
+                if (uri != null) runCatching { cr.delete(uri, null, null) }
+                _download.value = DownloadUiState(name = name, running = false, error = e.message)
+                toastError("Download", e)
+            }
+        }
+    }
+
+    /** Appends " (1)", " (2)"… instead of silently colliding with an existing download. */
+    private fun uniqueDownloadName(cr: android.content.ContentResolver, base: String): String {
+        val dir = android.os.Environment.DIRECTORY_DOWNLOADS + "/OpenCodeConnect/"
+        val existing = mutableSetOf<String>()
+        runCatching {
+            cr.query(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(android.provider.MediaStore.MediaColumns.DISPLAY_NAME),
+                android.provider.MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                arrayOf(dir),
+                null,
+            )?.use { c ->
+                while (c.moveToNext()) c.getString(0)?.lowercase()?.let { existing.add(it) }
+            }
+        }
+        if (base.lowercase() !in existing) return base
+        val dot = base.lastIndexOf('.')
+        val stem = if (dot > 0) base.substring(0, dot) else base
+        val ext = if (dot > 0) base.substring(dot) else ""
+        var i = 1
+        while ("$stem ($i)$ext".lowercase() in existing) i++
+        return "$stem ($i)$ext"
+    }
+
+    private fun guessMime(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: "application/octet-stream"
+    }
+
+    fun cancelDownload() {
+        downloadJob?.cancel()
+    }
+
+    fun dismissDownload() {
+        _download.value = null
     }
 
     /** Working directory of the session currently open in the chat. */
@@ -1360,4 +1557,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+}
+
+// --- PC (Windows) path helpers ---------------------------------------------
+// java.io.File on Android splits paths on '/', so it cannot parse the
+// backslash paths the PC agent sends: getParent() returns null (that's why
+// "go up" silently did nothing and rename failed) and getName() returns the
+// whole path. These work on both separators the agent can emit.
+
+internal fun pcIsSep(c: Char): Boolean = c == '\\' || c == '/'
+
+/** Parent of a Windows path; null for "~", a drive root or anything relative. */
+internal fun pcParent(raw: String): String? {
+    if (raw.isEmpty()) return null
+    var end = raw.length
+    while (end > 1 && pcIsSep(raw[end - 1])) {
+        if (end == 3 && raw[1] == ':') break // keep "C:\" as-is
+        end--
+    }
+    var i = end - 1
+    while (i >= 0 && !pcIsSep(raw[i])) i--
+    if (i <= 0) return null
+    val parent = raw.substring(0, i)
+    return if (parent.length == 2 && parent[1] == ':') "$parent\\" else parent
+}
+
+/** dir + name in agent notation: "~" stays "~", "C:\" stays a drive root. */
+internal fun pcJoin(dir: String, name: String): String {
+    val base = dir.trimEnd('/', '\\')
+    return if (base.isEmpty()) name else "$base\\$name"
+}
+
+/** Last path component ("C:\Users\x" -> "x"). */
+internal fun pcName(path: String): String {
+    if (path.isEmpty()) return ""
+    var end = path.length
+    while (end > 1 && pcIsSep(path[end - 1])) end--
+    val trimmed = path.substring(0, end)
+    var i = trimmed.length - 1
+    while (i >= 0 && !pcIsSep(trimmed[i])) i--
+    return trimmed.substring(i + 1)
 }
