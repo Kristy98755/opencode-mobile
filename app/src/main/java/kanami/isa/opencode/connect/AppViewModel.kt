@@ -23,6 +23,7 @@ import kanami.isa.opencode.connect.net.RelayClient
 import kanami.isa.opencode.connect.net.RelayException
 import kanami.isa.opencode.connect.net.RelayState
 import kanami.isa.opencode.connect.net.Session
+import kanami.isa.opencode.connect.net.TAIL_CHUNK_CHARS
 import kanami.isa.opencode.connect.net.json
 import kanami.isa.opencode.connect.net.str
 import kotlinx.coroutines.Dispatchers
@@ -468,6 +469,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** "Load more" plate: one older chunk, capped to TAIL_CHUNK_CHARS like the initial tail. */
     fun loadMoreMessages() {
         val cur = _chat.value
         val sid = cur.sessionId ?: return
@@ -476,7 +478,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _chat.value = cur.copy(loadingMore = true)
         viewModelScope.launch {
             try {
-                val page = api.messagesPage(sid, before)
+                val page = api.messagesPage(sid, before, chars = TAIL_CHUNK_CHARS)
                 // the await can outlast a session switch — never merge into a foreign chat
                 if (_chat.value.sessionId != sid) return@launch
                 val merged = mergeMessageLists(_chat.value.messages, page.messages)
@@ -488,6 +490,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 persistCache(sid)
             } catch (e: Exception) {
+                _chat.value = _chat.value.copy(loadingMore = false)
+            }
+        }
+    }
+
+    /** The fragment plate inside a truncated message: fetch its full version, nothing else. */
+    fun expandMessage() {
+        val cur = _chat.value
+        val sid = cur.sessionId ?: return
+        val before = cur.oldestLoadedId ?: return
+        if (cur.loading || cur.loadingMore) return
+        _chat.value = cur.copy(loadingMore = true)
+        viewModelScope.launch {
+            try {
+                val page = api.messagesPage(sid, before, limit = 1)
+                if (_chat.value.sessionId != sid) return@launch
+                val merged = mergeMessageLists(_chat.value.messages, page.messages)
+                _chat.value = _chat.value.copy(
+                    messages = merged,
+                    hasMore = if (page.hasMore) page.hasMore else _chat.value.hasMore,
+                    loadingMore = false,
+                )
+                persistCache(sid)
+            } catch (e: Exception) {
+                _chat.value = _chat.value.copy(loadingMore = false)
+            }
+        }
+    }
+
+    /** "Load full conversation": drain every remaining page untruncated until hasMore flips. */
+    fun loadFullHistory() {
+        val cur = _chat.value
+        val sid = cur.sessionId ?: return
+        if (cur.loading || cur.loadingMore || !cur.hasMore) return
+        _chat.value = cur.copy(loadingMore = true)
+        viewModelScope.launch {
+            try {
+                var guard = 0
+                while (guard++ < 400) {
+                    val c = _chat.value
+                    if (c.sessionId != sid || !c.hasMore) break
+                    val before = c.oldestLoadedId ?: break
+                    val page = api.messagesPage(sid, before, limit = 500)
+                    if (_chat.value.sessionId != sid) return@launch
+                    val merged = mergeMessageLists(_chat.value.messages, page.messages)
+                    _chat.value = _chat.value.copy(
+                        messages = merged,
+                        hasMore = page.hasMore,
+                        oldestLoadedId = page.oldest,
+                    )
+                    if (page.messages.isEmpty()) break
+                }
+                persistCache(sid)
+            } catch (e: Exception) {
+                /* keep what was already merged */
+            } finally {
                 _chat.value = _chat.value.copy(loadingMore = false)
             }
         }
@@ -1234,6 +1292,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** rm — the agent only ever moves the target into the Windows recycle bin. */
     fun deleteFile(node: FileNode) {
         runFileOp("Deleted to recycle bin") { api.deleteFile(absOf(node)) }
+    }
+
+    /** mkdir in the folder the browser shows right now (file screen and the picker share this). */
+    fun createFolder(name: String) {
+        val dir = _files.value.path
+        val clean = name.trim()
+        if (dir.isEmpty() || clean.isEmpty()) return
+        runFileOp("Folder created") { api.createFolder(pcJoin(dir, clean)) }
     }
 
     private fun runFileOp(success: String, block: suspend () -> Unit) {

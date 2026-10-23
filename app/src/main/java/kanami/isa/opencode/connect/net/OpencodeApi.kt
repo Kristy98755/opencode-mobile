@@ -14,6 +14,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
+/** One chunk of chat history: the same budget the initial tail renders with. */
+const val TAIL_CHUNK_CHARS = 2048
+
 class OpencodeApi(private val relay: RelayClient) {
 
     private val json = Json {
@@ -115,13 +118,25 @@ class OpencodeApi(private val relay: RelayClient) {
         call("DELETE", "/session/$id")
     }
 
-    suspend fun messagesTail(sessionId: String, chars: Int = 2048): MessagesPage {
+    suspend fun messagesTail(sessionId: String, chars: Int = TAIL_CHUNK_CHARS): MessagesPage {
         val el = call("GET", "/session/$sessionId/messages-tail?chars=$chars", timeoutSeconds = 90L)
         return withContext(Dispatchers.IO) { parseMessagesPage(el) }
     }
 
-    suspend fun messagesPage(sessionId: String, before: String, limit: Int = 25): MessagesPage {
-        val path = "/session/$sessionId/messages-tail?before=" + encodeQuery(before) + "&limit=$limit"
+    /**
+     * Page of history before `before`. `chars > 0` caps the whole page to that
+     * many characters (boundary message stays head-truncated) — "Load more"
+     * sends TAIL_CHUNK_CHARS so the rest never arrives full-size in one go;
+     * `chars = 0` returns full messages ("Load full conversation", fragment expand).
+     */
+    suspend fun messagesPage(
+        sessionId: String,
+        before: String,
+        limit: Int = 25,
+        chars: Int = 0,
+    ): MessagesPage {
+        var path = "/session/$sessionId/messages-tail?before=" + encodeQuery(before) + "&limit=$limit"
+        if (chars > 0) path += "&chars=$chars"
         val el = call("GET", path, timeoutSeconds = 60L)
         return withContext(Dispatchers.IO) { parseMessagesPage(el) }
     }
@@ -315,6 +330,16 @@ class OpencodeApi(private val relay: RelayClient) {
             "/file/delete",
             buildJsonObject { put("path", path) },
             timeoutSeconds = 180L,
+        )
+    }
+
+    /** mkdir — one level, the agent answers 409 when the name is already taken. */
+    suspend fun createFolder(path: String) {
+        call(
+            "POST",
+            "/file/mkdir",
+            buildJsonObject { put("path", path) },
+            timeoutSeconds = 60L,
         )
     }
 

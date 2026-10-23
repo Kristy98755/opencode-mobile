@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kanami.isa.opencode.connect.AppViewModel
+import kanami.isa.opencode.connect.pcParent
 import kanami.isa.opencode.connect.net.RelayState
 import kanami.isa.opencode.connect.net.Session
 import kanami.isa.opencode.connect.ui.theme.Border
@@ -371,6 +372,7 @@ fun SessionsScreen(
 
             if (newProjectOpen) {
                 NewProjectDialog(
+                    vm = vm,
                     knownDirs = knownDirs,
                     onDismiss = { newProjectOpen = false },
                     onCreate = { dir ->
@@ -592,11 +594,13 @@ private fun BranchCard(onClick: () -> Unit) {
 
 @Composable
 private fun NewProjectDialog(
+    vm: AppViewModel,
     knownDirs: List<String>,
     onDismiss: () -> Unit,
     onCreate: (String) -> Unit,
 ) {
     var path by remember { mutableStateOf("") }
+    var pickerOpen by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New project") },
@@ -615,6 +619,15 @@ private fun NewProjectDialog(
                     label = { Text("Directory path") },
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium,
+                    trailingIcon = {
+                        IconButton(onClick = { pickerOpen = true }) {
+                            Icon(
+                                Icons.Outlined.Folder,
+                                contentDescription = "Pick directory",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    },
                 )
                 if (knownDirs.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
@@ -650,6 +663,196 @@ private fun NewProjectDialog(
                 enabled = path.isNotBlank(),
                 onClick = { onCreate(path.trim()) },
             ) { Text("Create") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+
+    if (pickerOpen) {
+        DirectoryPickerDialog(
+            vm = vm,
+            startPath = path,
+            onDismiss = { pickerOpen = false },
+            onPick = { picked ->
+                path = picked
+                pickerOpen = false
+            },
+        )
+    }
+}
+
+/**
+ * Folder icon inside the new-project path field opens this: a browser over the
+ * PC's real directories (same vm.files state the file screen uses), with
+ * "../" + "Level Up", an inline "New Folder" and the Cancel / Choose
+ * Directory pair at the bottom.
+ */
+@Composable
+private fun DirectoryPickerDialog(
+    vm: AppViewModel,
+    startPath: String,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    val files by vm.files.collectAsStateWithLifecycle()
+    val opBusy by vm.fileOpBusy.collectAsStateWithLifecycle()
+    var creating by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        vm.loadDir(startPath.trim().ifEmpty { "~" })
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose directory") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { vm.loadDir("~") }) { Text("~") }
+                    Text(
+                        files.path,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                if (creating) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("New folder name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.End,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        TextButton(onClick = { creating = false; newName = "" }) { Text("Cancel") }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            enabled = newName.isNotBlank() && !opBusy,
+                            onClick = {
+                                vm.createFolder(newName)
+                                newName = ""
+                                creating = false
+                            },
+                        ) { Text("Create") }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .fillMaxWidth(),
+                    ) {
+                        item(key = "__up") {
+                            val canUp = pcParent(files.path) != null
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = canUp) { vm.goUpDir() }
+                                    .padding(vertical = 8.dp, horizontal = 2.dp),
+                            ) {
+                                Text(
+                                    "../",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (canUp) MaterialTheme.colorScheme.primary else TextSecondary,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "Level Up ⤴",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (canUp) MaterialTheme.colorScheme.primary else TextSecondary,
+                                )
+                            }
+                        }
+                        item(key = "__newdir") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !opBusy) { creating = true }
+                                    .padding(vertical = 8.dp, horizontal = 2.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "New Folder",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        val dirs = files.nodes.filter { it.type == "directory" }
+                        when {
+                            files.error != null -> item(key = "__error") {
+                                Text(
+                                    files.error ?: "error",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp, horizontal = 2.dp),
+                                )
+                            }
+                            !files.loading && dirs.isEmpty() -> item(key = "__empty") {
+                                Text(
+                                    "No subfolders",
+                                    color = TextSecondary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp, horizontal = 2.dp),
+                                )
+                            }
+                        }
+                        items(dirs, key = { it.absolute.ifEmpty { it.path + it.name } }) { node ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        vm.loadDir(node.absolute.ifEmpty { node.path })
+                                    }
+                                    .padding(vertical = 8.dp, horizontal = 2.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Folder,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    node.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !creating && files.error == null,
+                onClick = { onPick(files.path) },
+            ) { Text("Choose Directory") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }

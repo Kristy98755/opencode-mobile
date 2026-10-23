@@ -260,9 +260,10 @@ async function handleReq(msg) {
   // Async prompt wakes are unreliable in both shapes: the legacy in-memory
   // `prompt_async` wake is silently lost across processes, and the durable v2
   // queue (delivery:"queue") admits inputs but its drain loop never starts on
-  // opencode 1.19.x serve (no loop/process/stream, no error). Every wake is
-  // therefore translated into a fire-and-forget blocking POST /message: the
-  // relay gets an immediate ack and the reply reaches the app via SSE.
+  // opencode 1.19.x serve (no loop/process/stream, no error). Both shapes are
+  // therefore acknowledged at once and handed to the agent's durable prompt
+  // queue (persisted receipt + blocking POST /message + store-based admission
+  // retries). The reply reaches the app via SSE.
   const paMatch = /^\/session\/([^/]+)\/prompt_async$/.exec(p.split("?")[0]);
   if (method === "POST" && paMatch && body && typeof body === "object") {
     handlePromptWake(id, paMatch[1], body, started, "legacy");
@@ -322,6 +323,10 @@ async function handleReq(msg) {
     await handleFileDelete(id, body, started);
     return;
   }
+  if (method === "POST" && fp === "/file/mkdir") {
+    await handleFileMkdir(id, body, started);
+    return;
+  }
 
   try {
     // prompt blocks until the whole turn finishes (turns here run for tens of
@@ -363,10 +368,12 @@ async function handleReq(msg) {
 
 // ---- async prompt wakes ---------------------------------------------------
 // Every wake (legacy prompt_async or durable v2 prompt) is acked immediately
-// and executed as a blocking POST /session/{sid}/message inside a per-session
-// queue: blocking is the only wake path proven to run the turn on opencode
-// 1.19.x serve (durable queue admits but never drains; legacy wake is lost
-// across processes). The reply streams to the app through the SSE bridge.
+// and executed through the agent's own durable queue: a receipt is persisted
+// to %TEMP%\opencode\prompt_queue.json before the ack leaves, then delivered
+// as a blocking POST /session/{sid}/message inside a per-session chain.
+// Admission (the user message visible in the store) and retries make delivery
+// survive crashes, timeouts and opencode restarts; the reply streams to the
+// app through the SSE bridge.
 
 const blockChains = new Map(); // sessionID -> Promise (serialize turns per session)
 
@@ -424,39 +431,114 @@ function partsFromWake(body, shape) {
   return parts;
 }
 
+// ---- durable prompt queue ---------------------------------------------------
+// Every wake is written to %TEMP%\opencode\prompt_queue.json BEFORE its ack
+// leaves, so the receipt survives crashes and dropped websockets. Delivery is
+// one blocking POST /session/{sid}/message; "admission" (the wake's user
+// message present in the store, observed ~36s after a healthy POST, seconds
+// normally) is the source of truth. An attempt is retried ONLY when its POST
+// visibly failed AND the store lacks the message — a slow-but-admitted POST is
+// never resent (that would double the turn) and a 2xx POST counts as delivery
+// even if the matcher sees nothing (the turn already ran).
+const QUEUE_FILE = path.join(os.tmpdir(), "opencode", "prompt_queue.json");
+const promptQueue = new Map(); // qid -> { qid, sid, shape, parts, agent, text, state, ts, attempts, error, recovered }
+const ADMISSION_WAIT_MS = 180000;
+const ADMISSION_POLL_MS = 2000;
+const MAX_DELIVERY_ATTEMPTS = 3;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function saveQueue() {
+  try {
+    const cutoff = Date.now() - 86400000;
+    const keep = [...promptQueue.values()].filter(
+      (e) => !((e.state === "done" || e.state === "failed") && e.ts < cutoff),
+    );
+    if (keep.length > 200) keep.splice(0, keep.length - 200);
+    const keepSet = new Set(keep);
+    for (const e of [...promptQueue.values()]) if (!keepSet.has(e)) promptQueue.delete(e.qid);
+    fs.mkdirSync(path.dirname(QUEUE_FILE), { recursive: true });
+    const tmp = QUEUE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(keep));
+    fs.renameSync(tmp, QUEUE_FILE);
+  } catch (e) {
+    log("queue save err:", e.message || String(e));
+  }
+}
+
+function loadQueue() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
+    if (!Array.isArray(arr)) return;
+    for (const e of arr) {
+      if (!e || !e.qid || !e.sid || !Array.isArray(e.parts)) continue;
+      if (e.state === "queued" || e.state === "sending") {
+        // the process died between receipt and delivery — restart it
+        e.state = "queued";
+        e.recovered = true;
+      }
+      promptQueue.set(e.qid, e);
+    }
+    if (promptQueue.size) log("queue restored:", promptQueue.size, "entries");
+  } catch {
+    /* no queue file yet */
+  }
+}
+
+function recoverQueue() {
+  for (const e of [...promptQueue.values()]) {
+    if (e.state !== "queued" || !e.recovered) continue;
+    log("queue recovering", e.qid, e.sid, "attempts=" + (e.attempts || 0));
+    enqueueBlock(e.sid, () => deliverWake(e));
+  }
+}
+
+// Admission: the store holds a user message with this wake's exact text created
+// around the wake. The list is creation-ordered, so the scan runs newest-first.
+async function messageAdmitted(entry) {
+  let list;
+  try {
+    list = await fetchSessionMessages(entry.sid);
+  } catch {
+    return false;
+  }
+  if (!entry.text) return false;
+  const cut = entry.ts - 60000;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    const inf = m && m.info;
+    if (!inf) continue;
+    const tc = (inf.time && (inf.time.created || inf.time.start)) || 0;
+    if (tc && tc < cut) break;
+    if (inf.role !== "user") continue;
+    const txt = (Array.isArray(m.parts) ? m.parts : [])
+      .filter((p) => p.type === "text")
+      .map((p) => p.text || "")
+      .join("");
+    if (txt === entry.text) return true;
+  }
+  return false;
+}
+
 function handlePromptWake(id, sid, body, started, shape) {
   const parts = partsFromWake(body, shape);
   const agent = typeof body.agent === "string" && body.agent ? body.agent : null;
-
-  enqueueBlock(sid, async () => {
-    activeBlockTurns.set(sid, (activeBlockTurns.get(sid) || 0) + 1);
-    lastMessageEvAt.set(sid, Date.now());
-    try {
-      if (agent) {
-        const ar = await opencodeFetch(
-          `/api/session/${sid}/agent`,
-          { method: "POST", body: JSON.stringify({ agent }) },
-          15000,
-        );
-        log("ff-agent ->", sid, ar.status);
-      }
-      const res = await opencodeFetch(
-        `/session/${sid}/message`,
-        { method: "POST", body: JSON.stringify({ parts }) },
-        900000,
-      );
-      const t = await res.text();
-      log("ff-block ->", sid, res.status, "bytes=" + t.length);
-    } catch (e) {
-      log("ff-block err:", sid, e.message || String(e));
-    } finally {
-      const left = Math.max(0, (activeBlockTurns.get(sid) || 0) - 1);
-      if (left > 0) activeBlockTurns.set(sid, left);
-      else activeBlockTurns.delete(sid);
-      // the blocking POST returns only when the turn is over
-      lastMessageEvAt.delete(sid);
-    }
-  });
+  const entry = {
+    qid: "pq_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6),
+    sid,
+    shape,
+    parts,
+    agent,
+    text: parts.filter((p) => p.type === "text").map((p) => p.text || "").join(""),
+    state: "queued",
+    ts: Date.now(),
+    attempts: 0,
+    error: null,
+    recovered: false,
+  };
+  promptQueue.set(entry.qid, entry);
+  saveQueue(); // durable receipt BEFORE the ack goes out
+  enqueueBlock(sid, () => deliverWake(entry));
 
   if (shape === "v2") {
     wsSend({
@@ -471,13 +553,143 @@ function handlePromptWake(id, sid, body, started, shape) {
           prompt: body.prompt || {},
           delivery: "queue",
           timeCreated: Date.now(),
+          queueID: entry.qid,
         },
       },
     });
   } else {
     wsSend({ t: "res", id, s: 204, b: null });
   }
-  log("res ->", id, shape, "wake accepted (ff-block queued)", "ms=" + (Date.now() - started));
+  log("res ->", id, shape, "wake accepted (queued " + entry.qid + ")", "ms=" + (Date.now() - started));
+}
+
+async function deliverWake(entry) {
+  const sid = entry.sid;
+  activeBlockTurns.set(sid, (activeBlockTurns.get(sid) || 0) + 1);
+  lastMessageEvAt.set(sid, Date.now());
+  let pendingCarrier = null; // the live blocking POST, if any
+  try {
+    // Recovery / duplicate guard: a previous process (or a slow attempt) may
+    // have admitted this wake already — poll the store before ever POSTing.
+    if (entry.recovered) {
+      for (let i = 0; i < 30; i++) {
+        if (await messageAdmitted(entry)) break;
+        await sleep(2000);
+      }
+      if (await messageAdmitted(entry)) {
+        entry.state = "done";
+        entry.error = null;
+        saveQueue();
+        log("wake-", entry.qid, sid, "recovered (already admitted)");
+        return;
+      }
+      entry.recovered = false;
+    }
+    if (entry.agent) {
+      const ar = await opencodeFetch(
+        `/api/session/${sid}/agent`,
+        { method: "POST", body: JSON.stringify({ agent: entry.agent }) },
+        15000,
+      );
+      log("ff-agent ->", sid, ar.status);
+    }
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+      if (await messageAdmitted(entry)) {
+        entry.state = "done";
+        entry.error = null;
+        saveQueue();
+        log("wake-", entry.qid, sid, "admitted before POST (attempt " + attempt + ")");
+        return;
+      }
+      entry.attempts = attempt;
+      entry.state = "sending";
+      entry.error = null;
+      saveQueue();
+      log("wake-", entry.qid, sid, "POST attempt", attempt);
+      let carrierSettled = false;
+      let carrierErr = null;
+      const carrier = opencodeFetch(
+        `/session/${sid}/message`,
+        { method: "POST", body: JSON.stringify({ parts: entry.parts }) },
+        900000,
+      )
+        .then(async (res) => {
+          const t = await res.text();
+          carrierSettled = true;
+          log("ff-block ->", sid, res.status, "bytes=" + t.length, "attempt=" + attempt, entry.qid);
+          if (!res.ok) throw new Error("opencode HTTP " + res.status);
+          return true;
+        })
+        .catch((e) => {
+          carrierSettled = true;
+          carrierErr = e.message || String(e);
+          return false;
+        });
+      pendingCarrier = carrier;
+      // Poll for admission while the POST lives. If it outlives the window,
+      // await it instead — never fire a second POST alongside a live one.
+      const deadline = Date.now() + ADMISSION_WAIT_MS;
+      let admitted = false;
+      for (;;) {
+        admitted = await messageAdmitted(entry);
+        if (admitted || carrierSettled) break;
+        if (Date.now() >= deadline) {
+          log("wake-", entry.qid, sid, "admission window over, awaiting live POST");
+          await carrier;
+          admitted = await messageAdmitted(entry);
+          break;
+        }
+        await sleep(ADMISSION_POLL_MS);
+      }
+      // The POST is over (or just resolved): give the store a moment to land
+      // the message write before deciding — long after a 2xx (the store may
+      // lag the response), a couple of polls after a rejection.
+      const graceRounds = carrierErr === null ? 15 : 3;
+      for (let i = 0; i < graceRounds && !admitted; i++) {
+        if (!carrierSettled) break;
+        await sleep(2000);
+        admitted = await messageAdmitted(entry);
+      }
+      if (admitted) {
+        entry.state = "done";
+        entry.error = null;
+        saveQueue();
+        log("wake-", entry.qid, sid, "admitted", "attempt=" + attempt);
+        return;
+      }
+      if (carrierErr === null) {
+        // HTTP 2xx without a store match: the turn ran to completion, that IS
+        // delivery — never retry a completed turn.
+        entry.state = "done";
+        entry.error = null;
+        saveQueue();
+        log("wake-", entry.qid, sid, "completed without store match (kept)", "attempt=" + attempt);
+        return;
+      }
+      entry.error = carrierErr;
+      entry.state = attempt < MAX_DELIVERY_ATTEMPTS ? "queued" : "failed";
+      saveQueue();
+      log("wake-", entry.qid, sid, "attempt", attempt, "failed:", carrierErr);
+      if (attempt < MAX_DELIVERY_ATTEMPTS) await sleep(attempt === 1 ? 1000 : 3000);
+    }
+  } catch (e) {
+    entry.state = "failed";
+    entry.error = e.message || String(e);
+    saveQueue();
+    log("wake-", entry.qid, sid, "delivery error:", e.message || String(e));
+  } finally {
+    const release = () => {
+      const left = Math.max(0, (activeBlockTurns.get(sid) || 0) - 1);
+      if (left > 0) activeBlockTurns.set(sid, left);
+      else activeBlockTurns.delete(sid);
+      // the blocking POST returns only when the turn is over
+      lastMessageEvAt.delete(sid);
+    };
+    // admission can be seen while the POST (the turn) is still running — hold
+    // the in-flight flag until the carrier actually settles, like before
+    if (pendingCarrier) pendingCarrier.then(release, release);
+    else release();
+  }
 }
 
 // ---- v2 -> legacy question translation ------------------------------------
@@ -575,6 +787,30 @@ async function handleSessionStatus(id, started) {
         st[sid] = { type: "busy" };
         added++;
       }
+    }
+    // surface the durable prompt queue: everything not delivered (or failed)
+    // rides along so the app can see pending retries and delivery errors
+    const qBySid = new Map();
+    for (const e of promptQueue.values()) {
+      if (e.state === "done") continue;
+      if (!qBySid.has(e.sid)) qBySid.set(e.sid, []);
+      qBySid.get(e.sid).push({
+        qid: e.qid,
+        state: e.state,
+        ts: e.ts,
+        attempts: e.attempts || 0,
+        error: e.error ? String(e.error).slice(0, 200) : null,
+      });
+    }
+    for (const [sid, items] of qBySid) {
+      const cur = st[sid];
+      const base = cur && typeof cur === "object" && !Array.isArray(cur) ? cur : {};
+      const busy = items.some((i) => i.state === "queued" || i.state === "sending");
+      st[sid] = {
+        ...base,
+        ...(busy && base.type !== "busy" && base.type !== "retry" ? { type: "busy" } : {}),
+        promptQueue: items,
+      };
     }
     wsSend({ t: "res", id, s: res.status, b: st });
     log("res ->", id, res.status, "status sessions=" + Object.keys(st).length, "inFlight=+" + added, "ms=" + (Date.now() - started));
@@ -815,6 +1051,28 @@ async function handleFileDelete(id, body, started) {
     const code = e && e.code === "ENOENT" ? 404 : 500;
     wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
     log("res ->", id, code, "file-delete error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+async function handleFileMkdir(id, body, started) {
+  const target = path.normalize(resolveFsAbs(String((body && body.path) || "")));
+  if (!target || target === ".") {
+    wsSend({ t: "res", id, s: 400, b: { message: "path is required" } });
+    return;
+  }
+  if (path.resolve(target) === path.parse(path.resolve(target)).root) {
+    wsSend({ t: "res", id, s: 400, b: { message: "refusing to touch a drive root" } });
+    return;
+  }
+  try {
+    // single level only — creating a whole chain hides typos in the picker
+    await fs.promises.mkdir(target, { recursive: false });
+    wsSend({ t: "res", id, s: 200, b: { ok: true, path: target } });
+    log("res ->", id, 200, "file-mkdir", target, "ms=" + (Date.now() - started));
+  } catch (e) {
+    const code = e && e.code === "EEXIST" ? 409 : e && e.code === "ENOENT" ? 404 : 500;
+    wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
+    log("res ->", id, code, "file-mkdir error:", e.message, "ms=" + (Date.now() - started));
   }
 }
 
@@ -1318,6 +1576,8 @@ async function main() {
   log("opencode:", ocUrl);
   if (directory) log("directory:", directory);
   await ensureServer();
+  loadQueue(); // receipts from a previous process
+  recoverQueue(); // re-deliver wakes that never reached the store
   connectRelay();
 }
 

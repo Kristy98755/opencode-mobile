@@ -6,7 +6,10 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +56,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -167,8 +171,9 @@ fun ChatScreen(
         snapshotFlow { listState.firstVisibleItemIndex to listState.isScrollInProgress }
             .collect { (idx, scrolling) ->
                 if (scrolling && idx == 0) {
+                    // only remember where to snap back to — history loads on an
+                    // explicit Load more tap/hold now, never as a scroll side effect
                     prependAnchor = chat.messages.firstOrNull()?.info?.id
-                    vm.loadMoreMessages()
                 }
             }
     }
@@ -332,13 +337,23 @@ fun ChatScreen(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    if (chat.hasMore && chat.messages.isNotEmpty()) {
+                        item(key = "load-more") {
+                            LoadMorePlate(
+                                loading = chat.loadingMore,
+                                onLoadMore = { vm.loadMoreMessages() },
+                                onLoadFull = { vm.loadFullHistory() },
+                                modifier = Modifier.animateItem(),
+                            )
+                        }
+                    }
                     items(chat.messages, key = { it.info.id }) { msg ->
                         val awaiting = msg.info.id == chat.pendingUserMsgId && chat.awaitingUpstream
                         ChatMessage(
                             msg,
                             Modifier.animateItem(),
                             shimmer = awaiting,
-                            onExpand = { vm.loadMoreMessages() },
+                            onExpand = { vm.expandMessage() },
                         )
                     }
                     val lastRole = chat.messages.lastOrNull()?.info?.role
@@ -661,4 +676,66 @@ private fun encodeBase64(resolver: android.content.ContentResolver, uri: Uri): S
         return android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
     }
     return ""
+}
+
+/**
+ * Top-of-list "Load more" plate: a tap pulls one TAIL_CHUNK_CHARS chunk of
+ * history; a long-press opens a popup (a box, not a dialog) offering the same
+ * chunk or the whole remaining conversation untruncated.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LoadMorePlate(
+    loading: Boolean,
+    onLoadMore: () -> Unit,
+    onLoadFull: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var menu by remember { mutableStateOf(false) }
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Surface(
+            color = Surface1,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, Border),
+            modifier = Modifier.combinedClickable(
+                onClick = onLoadMore,
+                onLongClick = { menu = true },
+            ),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = TextSecondary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Loading…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary,
+                    )
+                } else {
+                    Text(
+                        "Load more",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text("Load more") },
+                onClick = { menu = false; onLoadMore() },
+            )
+            DropdownMenuItem(
+                text = { Text("Load full conversation") },
+                onClick = { menu = false; onLoadFull() },
+            )
+        }
+    }
 }

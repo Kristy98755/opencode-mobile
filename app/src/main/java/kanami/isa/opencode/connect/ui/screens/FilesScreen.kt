@@ -33,8 +33,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -101,6 +101,7 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
     var renameNode by remember { mutableStateOf<FileNode?>(null) }
     var deleteNode by remember { mutableStateOf<FileNode?>(null) }
     var downloadTarget by remember { mutableStateOf<FileNode?>(null) }
+    var newFolderOpen by remember { mutableStateOf(false) }
 
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -157,11 +158,6 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
-                actions = {
-                    IconButton(onClick = { vm.goUpDir() }, enabled = pcParent(files.path) != null) {
-                        Icon(Icons.Filled.ExpandLess, contentDescription = "Up")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
@@ -174,20 +170,79 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                 files.loading && files.nodes.isEmpty() -> CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center),
                 )
-                files.error != null -> Text(
-                    files.error ?: "error",
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                )
-                files.nodes.isEmpty() -> Text(
-                    "Empty directory",
-                    color = TextSecondary,
-                    modifier = Modifier.align(Alignment.Center),
-                )
                 else -> LazyColumn(
                     contentPadding = PaddingValues(12.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
+                    // the old top-bar up-arrow is now the first row of the list
+                    item(key = "__up") {
+                        val canUp = pcParent(files.path) != null
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = canUp) { vm.goUpDir() }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                "../",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (canUp) MaterialTheme.colorScheme.primary else TextSecondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "Level Up ⤴",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (canUp) MaterialTheme.colorScheme.primary else TextSecondary,
+                            )
+                        }
+                    }
+                    item(key = "__newdir") {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !opBusy) { newFolderOpen = true }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "New Folder",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                    if (files.error != null) {
+                        item(key = "__error") {
+                            Text(
+                                files.error ?: "error",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                            )
+                        }
+                    } else if (!files.loading && files.nodes.isEmpty()) {
+                        item(key = "__empty") {
+                            Text(
+                                "Empty directory",
+                                color = TextSecondary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                            )
+                        }
+                    }
                     items(files.nodes, key = { it.absolute.ifEmpty { it.path + it.name } }) { node ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -421,6 +476,36 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { renameNode = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (newFolderOpen) {
+        var folderName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { newFolderOpen = false },
+            title = { Text("New Folder") },
+            text = {
+                OutlinedTextField(
+                    value = folderName,
+                    onValueChange = { folderName = it },
+                    label = { Text("Folder name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = folderName.isNotBlank() && !opBusy,
+                    onClick = {
+                        val n = folderName.trim()
+                        newFolderOpen = false
+                        vm.createFolder(n)
+                    },
+                ) { Text("Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { newFolderOpen = false }) { Text("Cancel") }
             },
         )
     }
