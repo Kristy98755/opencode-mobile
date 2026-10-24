@@ -103,7 +103,7 @@ data class ViewerState(
 /** Copy/move held while the browser walks to the destination folder. */
 data class PendingOp(
     val kind: String, // "copy" | "move"
-    val from: String,
+    val paths: List<String>,
     val name: String,
 )
 
@@ -113,6 +113,13 @@ data class DownloadUiState(
     val done: Long = 0,
     val running: Boolean = true,
     val error: String? = null,
+)
+
+/** Finished download waiting for the user to pick Open / Share / Close. */
+data class DownloadDone(
+    val name: String,
+    val uri: android.net.Uri,
+    val mime: String,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -147,6 +154,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _download = MutableStateFlow<DownloadUiState?>(null)
     val download: StateFlow<DownloadUiState?> = _download.asStateFlow()
+
+    private val _downloadDone = MutableStateFlow<DownloadDone?>(null)
+    val downloadDone: StateFlow<DownloadDone?> = _downloadDone.asStateFlow()
 
     private val _fileOpBusy = MutableStateFlow(false)
     val fileOpBusy: StateFlow<Boolean> = _fileOpBusy.asStateFlow()
@@ -1348,7 +1358,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         else pcJoin(node.path, node.name)
 
     fun startPendingOp(kind: String, node: FileNode) {
-        _pendingOp.value = PendingOp(kind, absOf(node), node.name)
+        _pendingOp.value = PendingOp(kind, listOf(absOf(node)), node.name)
+        toast(if (kind == "copy") "Copy — pick a folder, then Copy here" else "Move — pick a folder, then Move here")
+    }
+
+    fun startBatchPendingOp(kind: String, paths: List<String>, label: String) {
+        if (paths.isEmpty()) return
+        _pendingOp.value = PendingOp(kind, paths, label)
         toast(if (kind == "copy") "Copy — pick a folder, then Copy here" else "Move — pick a folder, then Move here")
     }
 
@@ -1361,9 +1377,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val op = _pendingOp.value ?: return
         val dir = _files.value.path
         if (dir.isEmpty()) return
-        val to = pcJoin(dir, op.name)
         runFileOp(if (op.kind == "copy") "Copied" else "Moved") {
-            if (op.kind == "copy") api.copyFile(op.from, to) else api.moveFile(op.from, to)
+            for (src in op.paths) {
+                val base = src.substringAfterLast('\\').substringAfterLast('/')
+                val to = pcJoin(dir, base)
+                if (op.kind == "copy") api.copyFile(src, to) else api.moveFile(src, to)
+            }
             _pendingOp.value = null
         }
     }
@@ -1381,6 +1400,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** rm — the agent only ever moves the target into the Windows recycle bin. */
     fun deleteFile(node: FileNode) {
         runFileOp("Deleted to recycle bin") { api.deleteFile(absOf(node)) }
+    }
+
+    /** Batch delete: everything into the Windows recycle bin, one by one. */
+    fun batchDelete(paths: List<String>) {
+        if (paths.isEmpty()) return
+        runFileOp("Deleted to recycle bin") {
+            for (p in paths) api.deleteFile(p)
+        }
+    }
+
+    /** Batch zip: password-less archive created next to the selection. */
+    fun batchZip(paths: List<String>) {
+        if (paths.isEmpty()) return
+        val dir = _files.value.path
+        if (dir.isEmpty()) return
+        val name = "archive-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date()) + ".zip"
+        runFileOp("Archive created: $name") {
+            api.fileZip(paths, pcJoin(dir, name))
+        }
+    }
+
+    /** Upload a picked phone file into the folder the browser shows right now. */
+    fun uploadToCurrent(uri: android.net.Uri) {
+        val dir = _files.value.path
+        if (dir.isEmpty()) return
+        runFileOp("Uploaded") {
+            val cr = getApplication<Application>().contentResolver
+            val name = cr.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload.bin"
+            val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                cr.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw java.io.IOException("cannot read the picked file")
+            }
+            api.uploadFile(pcJoin(dir, name), bytes)
+        }
     }
 
     /** mkdir in the folder the browser shows right now (file screen and the picker share this). */
@@ -1464,10 +1521,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     cr.update(dest, publish, null, null)
                     _download.value = null
-                    toast("Saved: Download/OpenCodeConnect/$name")
+                    _downloadDone.value = DownloadDone(name = name, uri = dest, mime = guessMime(name))
                 } else {
                     _download.value = null
-                    toast("Saved: $name")
+                    _downloadDone.value = DownloadDone(name = name, uri = dest, mime = guessMime(name))
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // cancelled mid-flight: drop the partial file we created
@@ -1518,6 +1575,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissDownload() {
         _download.value = null
+    }
+
+    fun dismissDownloadDone() {
+        _downloadDone.value = null
     }
 
     /** Working directory of the session currently open in the chat. */

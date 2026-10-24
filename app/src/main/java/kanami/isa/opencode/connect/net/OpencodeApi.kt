@@ -343,6 +343,42 @@ class OpencodeApi(private val relay: RelayClient) {
         )
     }
 
+    /** Zip one or more files/folders into a password-less archive (Compress-Archive). */
+    suspend fun fileZip(from: List<String>, to: String) {
+        call(
+            "POST",
+            "/file/zip",
+            buildJsonObject {
+                put("from", buildJsonArray { from.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                put("to", to)
+            },
+            timeoutSeconds = 300L,
+        )
+    }
+
+    /** Upload a phone file to the PC in 64KB base64 chunks (mirrors /file/raw). */
+    suspend fun uploadFile(path: String, bytes: ByteArray, onProgress: ((Long, Long) -> Unit)? = null) {
+        val total = bytes.size.toLong()
+        var offset = 0L
+        do {
+            val end = minOf(offset + 64L * 1024L, total).toInt()
+            val chunk = bytes.copyOfRange(offset.toInt(), end)
+            call(
+                "POST",
+                "/file/upload",
+                buildJsonObject {
+                    put("path", path)
+                    put("offset", offset)
+                    put("data", android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP))
+                    put("eof", end.toLong() == total)
+                },
+                timeoutSeconds = 120L,
+            )
+            offset = end.toLong()
+            onProgress?.invoke(offset, total)
+        } while (offset < total)
+    }
+
     /** Next base64 chunk of a file for the download loop (`eof` ends it). */
     suspend fun fileChunk(path: String, offset: Long, len: Int = 65536): FileChunk = decode(
         call(

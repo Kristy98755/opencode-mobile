@@ -369,6 +369,14 @@ async function handleReq(msg) {
     await handleFileMkdir(id, body, started);
     return;
   }
+  if (method === "POST" && fp === "/file/zip") {
+    await handleFileZip(id, body, started);
+    return;
+  }
+  if (method === "POST" && fp === "/file/upload") {
+    await handleFileUpload(id, body, started);
+    return;
+  }
 
   try {
     // prompt blocks until the whole turn finishes (turns here run for tens of
@@ -1115,6 +1123,72 @@ async function handleFileDelete(id, body, started) {
     const code = e && e.code === "ENOENT" ? 404 : 500;
     wsSend({ t: "res", id, s: code, b: { message: e.message || String(e) } });
     log("res ->", id, code, "file-delete error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+async function handleFileZip(id, body, started) {
+  const rawFrom = Array.isArray(body && body.from) ? body.from : [];
+  const from = rawFrom.map((x) => path.normalize(resolveFsAbs(String(x))));
+  const to = path.normalize(resolveFsAbs(String((body && body.to) || "")));
+  if (!from.length || !to) {
+    wsSend({ t: "res", id, s: 400, b: { message: "from[] and to are required" } });
+    return;
+  }
+  try {
+    for (const src of from) {
+      if (!(await targetExists(src))) {
+        wsSend({ t: "res", id, s: 404, b: { message: "source not found: " + src } });
+        return;
+      }
+    }
+    if (await targetExists(to)) {
+      wsSend({ t: "res", id, s: 409, b: { message: "destination already exists: " + to } });
+      return;
+    }
+    const ps =
+      "$ErrorActionPreference='Stop';" +
+      "Compress-Archive -Path " +
+      from.map(psLiteral).join(",") +
+      " -DestinationPath " +
+      psLiteral(to);
+    await runPowerShell(ps, 300000);
+    wsSend({ t: "res", id, s: 200, b: { ok: true, op: "zip", path: to } });
+    log("res ->", id, 200, "file-zip", from.length, "->", to, "ms=" + (Date.now() - started));
+  } catch (e) {
+    wsSend({ t: "res", id, s: 500, b: { message: e.message || String(e) } });
+    log("res ->", id, 500, "file-zip error:", e.message, "ms=" + (Date.now() - started));
+  }
+}
+
+async function handleFileUpload(id, body, started) {
+  const target = path.normalize(resolveFsAbs(String((body && body.path) || "")));
+  const offset = Number((body && body.offset) || 0);
+  const eof = !!(body && body.eof);
+  const data = String((body && body.data) || "");
+  if (!target || !Number.isFinite(offset) || offset < 0) {
+    wsSend({ t: "res", id, s: 400, b: { message: "path and non-negative offset are required" } });
+    return;
+  }
+  try {
+    const buf = Buffer.from(data, "base64");
+    if (offset === 0) {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.writeFile(target, buf);
+    } else {
+      const st = await fs.promises.stat(target).catch(() => null);
+      if (!st || st.size !== offset) {
+        wsSend({ t: "res", id, s: 409, b: { message: "offset mismatch (have " + (st ? st.size : "none") + ", got " + offset + ")" } });
+        return;
+      }
+      const fh = await fs.promises.open(target, "a");
+      await fh.write(buf);
+      await fh.close();
+    }
+    wsSend({ t: "res", id, s: 200, b: { ok: true, op: "upload", written: buf.length, eof } });
+    log("res ->", id, 200, "file-upload", target, "bytes=" + buf.length, "eof=" + eof, "ms=" + (Date.now() - started));
+  } catch (e) {
+    wsSend({ t: "res", id, s: 500, b: { message: e.message || String(e) } });
+    log("res ->", id, 500, "file-upload error:", e.message, "ms=" + (Date.now() - started));
   }
 }
 

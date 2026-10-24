@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -86,6 +87,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kanami.isa.opencode.connect.AppViewModel
 import kanami.isa.opencode.connect.net.FileAttachment
@@ -192,114 +194,113 @@ fun ChatScreen(
     }
 
     Scaffold(
-        topBar = {
-            // Compact 36dp header row: the only thing above the list besides the
-            // status bar itself — no empty app-bar space.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.statusBars)
-                    .background(MaterialTheme.colorScheme.background)
-                    .height(36.dp)
-                    .padding(horizontal = 4.dp),
-            ) {
-                IconButton(onClick = {
-                    vm.closeChat()
-                    onBack()
-                }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                Text(
-                    chat.title ?: "Session",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .background(
-                            when {
-                                !agentOnline -> Color(0xFFF85149)
-                                chat.busy -> Yellow
-                                else -> Green
-                            },
-                            CircleShape,
-                        ),
-                )
-                Spacer(Modifier.width(10.dp))
-                IconButton(onClick = {
-                    val dir = vm.projectDirectory()
-                    if (dir.isNotEmpty()) onOpenFiles(dir)
-                    else vm.toast("No working directory known for this session")
-                }, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Outlined.FolderOpen, contentDescription = "Files", modifier = Modifier.size(18.dp))
-                }
-                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", modifier = Modifier.size(18.dp))
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Files") },
-                        onClick = {
-                            menuOpen = false
-                            val dir = vm.projectDirectory()
-                            if (dir.isNotEmpty()) onOpenFiles(dir)
-                            else vm.toast("No working directory known for this session")
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Clear messages (local)") },
-                        onClick = {
-                            menuOpen = false
-                            vm.toast("Open sessions are kept on the server")
-                        },
-                    )
-                }
-            }
-        },
         bottomBar = {
-            Composer(
-                draft = chat.draft,
-                onDraftChange = { vm.setDraft(it) },
-                busy = chat.busy,
-                attachments = attachments,
-                onAttach = {
-                    picker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                },
-                onRemoveAttachment = { attachments.remove(it) },
-                onSend = {
-                    scrollOnSend = true
-                    val text = chat.draft
-                    val uris = attachments.toList()
-                    attachments.clear()
-                    if (uris.isEmpty()) {
-                        vm.sendPrompt(text, emptyList())
-                    } else {
-                        scope.launch {
-                            val files = withContext(Dispatchers.Default) {
-                                uris.mapNotNull { uriToAttachment(context, it) }
-                            }
-                            vm.sendPrompt(text, files)
-                        }
+            Column {
+                // session controls live above the composer: the list gets the
+                // whole top of the screen — only the OS status bar insets it
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .height(34.dp)
+                        .padding(horizontal = 4.dp),
+                ) {
+                    IconButton(onClick = {
+                        vm.closeChat()
+                        onBack()
+                    }, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
-                },
-                onStop = { vm.abortPrompt() },
-                modelLabel = chat.model?.id?.ifEmpty { null } ?: "default",
-                providers = providers,
-                selectedProvider = chat.model?.providerID ?: "",
-                selectedModel = chat.model?.id ?: "",
-                onSelectModel = { p, m -> vm.selectSessionModel(p, m) },
-            )
+                    Text(
+                        chat.title ?: "Session",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(
+                                when {
+                                    !agentOnline -> Color(0xFFF85149)
+                                    chat.busy -> Yellow
+                                    else -> Green
+                                },
+                                CircleShape,
+                            ),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    IconButton(onClick = {
+                        val dir = vm.projectDirectory()
+                        if (dir.isNotEmpty()) onOpenFiles(dir)
+                        else vm.toast("No working directory known for this session")
+                    }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Files", modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", modifier = Modifier.size(18.dp))
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Files") },
+                            onClick = {
+                                menuOpen = false
+                                val dir = vm.projectDirectory()
+                                if (dir.isNotEmpty()) onOpenFiles(dir)
+                                else vm.toast("No working directory known for this session")
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Clear messages (local)") },
+                            onClick = {
+                                menuOpen = false
+                                vm.toast("Open sessions are kept on the server")
+                            },
+                        )
+                    }
+                }
+                Composer(
+                    draft = chat.draft,
+                    onDraftChange = { vm.setDraft(it) },
+                    busy = chat.busy,
+                    attachments = attachments,
+                    onAttach = {
+                        picker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    onRemoveAttachment = { attachments.remove(it) },
+                    onSend = {
+                        scrollOnSend = true
+                        val text = chat.draft
+                        val uris = attachments.toList()
+                        attachments.clear()
+                        if (uris.isEmpty()) {
+                            vm.sendPrompt(text, emptyList())
+                        } else {
+                            scope.launch {
+                                val files = withContext(Dispatchers.Default) {
+                                    uris.mapNotNull { uriToAttachment(context, it) }
+                                }
+                                vm.sendPrompt(text, files)
+                            }
+                        }
+                    },
+                    onStop = { vm.abortPrompt() },
+                    modelLabel = chat.model?.id?.ifEmpty { null } ?: "default",
+                    providers = providers,
+                    selectedProvider = chat.model?.providerID ?: "",
+                    selectedModel = chat.model?.id ?: "",
+                    onSelectModel = { p, m -> vm.selectSessionModel(p, m) },
+                )
+            }
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -333,7 +334,12 @@ fun ChatScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 10.dp),
+                    contentPadding = PaddingValues(
+                        start = 14.dp,
+                        end = 14.dp,
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+                        bottom = 10.dp,
+                    ),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     if (chat.hasMore && chat.messages.isNotEmpty()) {
@@ -359,17 +365,23 @@ fun ChatScreen(
                     val lastRole = chat.messages.lastOrNull()?.info?.role
                     if (showProcessing && lastRole == "user") {
                         item(key = "processing") {
-                            ProcessingBubble(Modifier.animateItem())
+                            // own layer above neighbors: the bubble must never
+                            // tangle with sibling textures while items animate
+                            Box(Modifier.fillMaxWidth().zIndex(1f)) {
+                                ProcessingBubble()
+                            }
                         }
                     }
                     val err = chat.error
                     if (err != null) {
                         item(key = "chat-error") {
-                            ErrorCard(
-                                text = err,
-                                onDismiss = { vm.clearChatError() },
-                                onRetry = if (chat.retryPrompt != null) ({ vm.retryTurnFromError() }) else null,
-                            )
+                            Box(Modifier.fillMaxWidth().zIndex(2f)) {
+                                ErrorCard(
+                                    text = err,
+                                    onDismiss = { vm.clearChatError() },
+                                    onRetry = if (chat.retryPrompt != null) ({ vm.retryTurnFromError() }) else null,
+                                )
+                            }
                         }
                     }
                     item { Spacer(Modifier.height(4.dp)) }

@@ -7,8 +7,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,27 +38,32 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Sort
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -92,20 +99,25 @@ import kanami.isa.opencode.connect.ui.theme.Surface1
 import kanami.isa.opencode.connect.ui.theme.TextSecondary
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
     val files by vm.files.collectAsStateWithLifecycle()
     val viewer by vm.viewer.collectAsStateWithLifecycle()
     val pendingOp by vm.pendingOp.collectAsStateWithLifecycle()
     val download by vm.download.collectAsStateWithLifecycle()
+    val downloadDone by vm.downloadDone.collectAsStateWithLifecycle()
     val opBusy by vm.fileOpBusy.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     var menuNode by remember { mutableStateOf<FileNode?>(null) }
     var renameNode by remember { mutableStateOf<FileNode?>(null) }
     var deleteNode by remember { mutableStateOf<FileNode?>(null) }
     var downloadTarget by remember { mutableStateOf<FileNode?>(null) }
     var newFolderOpen by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+    val selectionMode = selected.isNotEmpty()
 
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -116,6 +128,12 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
         if (result.resultCode == Activity.RESULT_OK && uri != null && node != null) {
             vm.downloadFile(node, uri)
         }
+    }
+
+    val uploadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) vm.uploadToCurrent(uri)
     }
 
     fun askDownload(node: FileNode) {
@@ -233,28 +251,6 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                             )
                         }
                     }
-                    item(key = "__newdir") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !opBusy) { newFolderOpen = true }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                "New Folder",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
                     if (files.error != null) {
                         item(key = "__error") {
                             Text(
@@ -279,14 +275,30 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                         }
                     }
                     items(files.nodes, key = { it.absolute.ifEmpty { it.path + it.name } }) { node ->
+                        val rowKey = node.absolute.ifEmpty { node.path + node.name }
+                        val isSelected = rowKey in selected
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    if (node.type == "directory") vm.loadDir(node.absolute.ifEmpty { node.path })
-                                    else vm.openFile(node.absolute.ifEmpty { node.path })
-                                }
+                                .background(
+                                    if (isSelected) androidx.compose.ui.graphics.Color(0x224F8EF7)
+                                    else androidx.compose.ui.graphics.Color.Transparent,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .combinedClickable(
+                                    onClick = {
+                                        if (selectionMode) {
+                                            selected = if (isSelected) selected - rowKey else selected + rowKey
+                                        } else {
+                                            if (node.type == "directory") vm.loadDir(node.absolute.ifEmpty { node.path })
+                                            else vm.openFile(node.absolute.ifEmpty { node.path })
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selected = if (isSelected) selected - rowKey else selected + rowKey
+                                    },
+                                )
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                         ) {
                             Icon(
@@ -409,6 +421,138 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             }
 
+            // Speed-dial FAB: New folder + Upload file (hidden while the batch bar
+            // or the copy/move bar owns the bottom of the screen)
+            if (!selectionMode && pendingOp == null) {
+                var fabExpanded by remember { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    if (fabExpanded) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = Surface1,
+                                shape = RoundedCornerShape(8.dp),
+                                shadowElevation = 4.dp,
+                            ) {
+                                Text(
+                                    "New folder",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            SmallFloatingActionButton(
+                                onClick = {
+                                    fabExpanded = false
+                                    newFolderOpen = true
+                                },
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            ) {
+                                Icon(Icons.Outlined.CreateNewFolder, contentDescription = "New folder")
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = Surface1,
+                                shape = RoundedCornerShape(8.dp),
+                                shadowElevation = 4.dp,
+                            ) {
+                                Text(
+                                    "Upload file",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            SmallFloatingActionButton(
+                                onClick = {
+                                    fabExpanded = false
+                                    uploadPicker.launch("*/*")
+                                },
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            ) {
+                                Icon(Icons.Outlined.UploadFile, contentDescription = "Upload file")
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    FloatingActionButton(onClick = { fabExpanded = !fabExpanded }) {
+                        Icon(
+                            if (fabExpanded) Icons.Filled.Close else Icons.Filled.Add,
+                            contentDescription = "Actions",
+                        )
+                    }
+                }
+            }
+
+            if (selectionMode) {
+                Surface(
+                    color = Surface1,
+                    shape = RoundedCornerShape(14.dp),
+                    shadowElevation = 6.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(12.dp)
+                        .fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${selected.size} selected",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { selected = emptySet() }) { Text("Cancel") }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            TextButton(onClick = {
+                                val p = selected.toList()
+                                selected = emptySet()
+                                vm.startBatchPendingOp("copy", p, "${p.size} items")
+                            }) { Text("Copy") }
+                            TextButton(onClick = {
+                                val p = selected.toList()
+                                selected = emptySet()
+                                vm.startBatchPendingOp("move", p, "${p.size} items")
+                            }) { Text("Move") }
+                            TextButton(onClick = {
+                                val p = selected.toList()
+                                selected = emptySet()
+                                vm.batchZip(p)
+                            }) { Text("Zip") }
+                            TextButton(onClick = { confirmBatchDelete = true }) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (confirmBatchDelete) {
+                AlertDialog(
+                    onDismissRequest = { confirmBatchDelete = false },
+                    title = { Text("Delete ${selected.size} items?") },
+                    text = { Text("Everything goes to the Windows recycle bin — nothing is lost forever.") },
+                    confirmButton = {
+                        Button(onClick = {
+                            confirmBatchDelete = false
+                            val p = selected.toList()
+                            selected = emptySet()
+                            vm.batchDelete(p)
+                        }) { Text("Delete") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmBatchDelete = false }) { Text("Cancel") }
+                    },
+                )
+            }
+
             pendingOp?.let { op ->
                 Surface(
                     color = Surface1,
@@ -489,6 +633,49 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { vm.closeViewer() }) { Text("Close") }
+            },
+        )
+    }
+
+    downloadDone?.let { d ->
+        AlertDialog(
+            onDismissRequest = { vm.dismissDownloadDone() },
+            title = { Text("Download complete") },
+            text = {
+                Text(d.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            },
+            confirmButton = {
+                Button(onClick = { vm.dismissDownloadDone() }) { Text("Close") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        vm.dismissDownloadDone()
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(d.uri, d.mime)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                },
+                            )
+                        }.onFailure { vm.toast("No app can open this file") }
+                    }) { Text("Open") }
+                    TextButton(onClick = {
+                        vm.dismissDownloadDone()
+                        runCatching {
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = d.mime
+                                        putExtra(Intent.EXTRA_STREAM, d.uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    },
+                                    "Share",
+                                ),
+                            )
+                        }.onFailure { vm.toast("Share failed") }
+                    }) { Text("Share") }
+                }
             },
         )
     }
