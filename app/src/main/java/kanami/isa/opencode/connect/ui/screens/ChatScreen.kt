@@ -327,7 +327,11 @@ fun ChatScreen(
                     val emptyErr = chat.error
                     if (emptyErr != null) {
                         Spacer(Modifier.height(14.dp))
-                        ErrorCard(text = emptyErr, onDismiss = { vm.clearChatError() })
+                        ErrorCard(
+                            text = emptyErr,
+                            onDismiss = { vm.clearChatError() },
+                            onRetry = if (chat.retryPrompt != null) ({ vm.retryTurnFromError() }) else null,
+                        )
                     }
                 }
             } else {
@@ -365,7 +369,11 @@ fun ChatScreen(
                     val err = chat.error
                     if (err != null) {
                         item(key = "chat-error") {
-                            ErrorCard(text = err, onDismiss = { vm.clearChatError() })
+                            ErrorCard(
+                                text = err,
+                                onDismiss = { vm.clearChatError() },
+                                onRetry = if (chat.retryPrompt != null) ({ vm.retryTurnFromError() }) else null,
+                            )
                         }
                     }
                     item { Spacer(Modifier.height(4.dp)) }

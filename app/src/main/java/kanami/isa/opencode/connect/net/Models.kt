@@ -128,6 +128,8 @@ data class FileNode(
     val absolute: String = "",
     val type: String = "file",
     val ignored: Boolean = false,
+    val size: Long = 0,
+    val modified: Long = 0,
 )
 
 @Serializable

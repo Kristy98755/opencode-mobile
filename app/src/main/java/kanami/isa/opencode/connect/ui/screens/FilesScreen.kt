@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -158,6 +160,37 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = {
+                    var sortMenu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { sortMenu = true }) {
+                        Icon(Icons.Outlined.Sort, contentDescription = "Sort", tint = TextSecondary)
+                    }
+                    DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                        FileSortOptions.forEach { (label, mode) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        label,
+                                        fontWeight = if (files.sort == mode) FontWeight.SemiBold else null,
+                                    )
+                                },
+                                leadingIcon = {
+                                    if (files.sort == mode) {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    sortMenu = false
+                                    vm.setFilesSort(mode)
+                                },
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
@@ -268,11 +301,24 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                if (node.ignored) {
+                                val meta = buildString {
+                                    if (node.type == "file" && node.size > 0) append(humanBytes(node.size))
+                                    if (node.modified > 0) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append(formatDate(node.modified))
+                                    }
+                                    if (node.ignored) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append("ignored")
+                                    }
+                                }
+                                if (meta.isNotEmpty()) {
                                     Text(
-                                        "ignored",
+                                        meta,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = TextSecondary.copy(alpha = 0.7f),
+                                        color = TextSecondary.copy(alpha = 0.8f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
@@ -690,3 +736,16 @@ private fun humanBytes(n: Long): String = when {
     n >= 1024L -> String.format("%.1f KB", n / 1024.0)
     else -> "$n B"
 }
+
+private val fileDateFmt = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault())
+
+private fun formatDate(ms: Long): String = fileDateFmt.format(java.util.Date(ms))
+
+private val FileSortOptions = listOf(
+    "Name (A→Z)" to "name",
+    "Name (Z→A)" to "name_desc",
+    "Size (small first)" to "size",
+    "Size (big first)" to "size_desc",
+    "Date (old first)" to "date",
+    "Date (new first)" to "date_desc",
+)

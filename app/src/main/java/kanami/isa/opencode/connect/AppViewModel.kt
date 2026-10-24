@@ -77,6 +77,7 @@ data class ChatUiState(
     val busy: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
+    val retryPrompt: String? = null,
     val draft: String = "",
     val awaitingUpstream: Boolean = false,
     val pendingUserMsgId: String? = null,
@@ -90,6 +91,7 @@ data class FilesUiState(
     val nodes: List<FileNode> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
+    val sort: String = "name",
 )
 
 data class ViewerState(
@@ -634,7 +636,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val draftBefore = _chat.value.draft
         clearDraftPersisted(sessionId)
         setBusy(sessionId, true)
-        _chat.value = _chat.value.copy(draft = "")
+        _chat.value = _chat.value.copy(draft = "", error = null, retryPrompt = null)
         startTailPolling(sessionId)
         val prevLocal = pendingLocalId
         val cleaned = if (prevLocal != null) _chat.value.messages.filterNot { it.info.id == prevLocal } else _chat.value.messages
@@ -759,6 +761,49 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * The turn ended (or died) with nothing to show. Surface a real error with a
+     * Retry action instead of leaving the user staring at an empty bubble — the
+     * draft is NOT returned to the input: the message is already in the store.
+     */
+    private fun failTurn(sessionId: String, message: String) {
+        val retry = _chat.value.messages.lastOrNull { it.info.role == "user" }
+            ?.parts?.firstOrNull { it.type == "text" }?.text
+        setBusy(sessionId, false)
+        if (_chat.value.sessionId == sessionId) {
+            _chat.value = _chat.value.copy(
+                error = message,
+                retryPrompt = retry ?: _chat.value.retryPrompt,
+            )
+        }
+    }
+
+    /** Non-null when a finished turn left no usable output at all. */
+    private fun deadTurnReason(msgs: List<MessageWithParts>): String? {
+        val last = msgs.lastOrNull() ?: return null
+        if (last.info.role != "assistant") return null
+        // message-level errors already render their own ErrorCard
+        if (last.info.error != null) return null
+        val text = last.parts.filter { it.type == "text" }.joinToString("") { it.text.orEmpty() }.trim()
+        val hasOutput = last.parts.any { it.type == "tool" || it.type == "patch" || it.type == "file" }
+        if (text.isNotEmpty() || hasOutput) return null
+        return "The model returned no reply (provider error, rate limit or empty response). " +
+            "Tap Retry to send your message again."
+    }
+
+    private fun hasRunningParts(msgs: List<MessageWithParts>): Boolean = msgs.any { m ->
+        m.parts.any { p ->
+            (p.state?.get("status") as? JsonPrimitive)?.content.let { it == "running" || it == "pending" }
+        }
+    }
+
+    /** Re-send the message of the turn that failed; entry point for the Retry button. */
+    fun retryTurnFromError() {
+        val text = _chat.value.retryPrompt ?: return
+        _chat.value = _chat.value.copy(error = null, retryPrompt = null)
+        sendPrompt(text)
+    }
+
+    /**
      * Two classes of errors are noise, not feedback: the "not connected" race (a
      * background poller beating the websocket handshake — the Connect screen already
      * shows the state) and coroutine/server cancellation texts the user can't act on.
@@ -809,7 +854,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             sortMessages(cur.messages + msg)
         }
-        _chat.value = cur.copy(messages = newList, error = null)
+        _chat.value = cur.copy(messages = newList)
     }
 
     private fun mergeMessages(old: MessageWithParts, new: MessageWithParts): MessageWithParts {
@@ -956,6 +1001,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         /** Completion must hold for this many consecutive polls before busy drops. */
         const val TAIL_DONE_STREAK = 3
+
+        /** Silent store with no running parts for this long => the turn died. */
+        const val TURN_STALL_MS = 120_000L
 
         /** Consecutive tail failures (~16s) before the poll gives up. */
         const val TAIL_MAX_ERRORS = 10
@@ -1206,7 +1254,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openFiles(rootPath: String) {
         _files.value = FilesUiState(path = rootPath, loading = true)
-        loadDir(rootPath)
+        viewModelScope.launch {
+            val saved = runCatching { settings.filesSort() }.getOrDefault("name")
+            _files.value = _files.value.copy(sort = saved)
+            loadDir(rootPath)
+        }
     }
 
     fun loadDir(path: String) {
@@ -1214,17 +1266,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _files.value = _files.value.copy(path = path, loading = true, error = null)
             try {
                 val nodes = api.files(path)
-                _files.value = FilesUiState(
+                _files.value = _files.value.copy(
                     path = path,
-                    nodes = nodes.sortedWith(
-                        compareBy({ it.type != "directory" }, { it.name.lowercase() })
-                    ),
+                    nodes = sortFileNodes(nodes, _files.value.sort),
                     loading = false,
                 )
             } catch (e: Exception) {
                 _files.value = _files.value.copy(loading = false, error = e.message)
             }
         }
+    }
+
+    fun setFilesSort(mode: String) {
+        val cur = _files.value
+        _files.value = cur.copy(sort = mode, nodes = sortFileNodes(cur.nodes, mode))
+        viewModelScope.launch { settings.saveFilesSort(mode) }
+    }
+
+    private fun sortFileNodes(nodes: List<FileNode>, sort: String): List<FileNode> {
+        val primary: Comparator<FileNode> = when (sort) {
+            "name_desc" -> compareByDescending { it.name.lowercase() }
+            "size" -> compareBy { it.size }
+            "size_desc" -> compareByDescending { it.size }
+            "date" -> compareBy { it.modified }
+            "date_desc" -> compareByDescending { it.modified }
+            else -> compareBy { it.name.lowercase() }
+        }
+        // directories stay on top regardless of the chosen order
+        return nodes.sortedWith(compareBy<FileNode> { it.type != "directory" }.then(primary))
     }
 
     fun goUpDir() {
@@ -1458,6 +1527,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         tailPollJobs[sessionId] = viewModelScope.launch {
             var errors = 0
             var doneStreak = 0
+            var lastSig = -1
+            var lastChangeAt = System.currentTimeMillis()
             while (true) {
                 delay(TAIL_POLL_MS)
                 // The owner is the per-session busy flag, not the visible chat:
@@ -1474,6 +1545,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     // hiccups are normal (relay reconnects); give up on a dead streak
                     if (++errors >= TAIL_MAX_ERRORS) {
                         dbg("tail stop $sessionId: $errors consecutive errors (${e.message})")
+                        failTurn(
+                            sessionId,
+                            "Connection to the PC agent was lost — the reply may never arrive. " +
+                                "Tap Retry to send your message again.",
+                        )
                         break
                     }
                     continue
@@ -1508,12 +1584,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         _chat.value = _chat.value.copy(messages = merged)
                         persistCache(sessionId)
                     }
+                    // A turn that stopped growing without finishing is dead (an
+                    // upstream stream error killed it): say so instead of spinning
+                    // the processing bubble forever.
+                    val sig = merged.size + merged.takeLast(2)
+                        .sumOf { m -> m.parts.sumOf { (it.text?.length ?: 0) + it.type.length } }
+                    val nowMs = System.currentTimeMillis()
+                    if (sig != lastSig) {
+                        lastSig = sig
+                        lastChangeAt = nowMs
+                    } else if (
+                        nowMs - lastChangeAt > TURN_STALL_MS && !page.inFlight && !hasRunningParts(merged)
+                    ) {
+                        dbg("tail stall $sessionId: no growth for ${nowMs - lastChangeAt}ms")
+                        failTurn(
+                            sessionId,
+                            "The reply stalled without finishing (provider error or rate limit). " +
+                                "Tap Retry to send your message again.",
+                        )
+                        break
+                    }
                     // The agent knows the turn is still running (fresh SSE activity /
                     // pending ff-block) even while the store looks finished.
                     if (turnFinished(merged) && !page.inFlight) {
                         if (++doneStreak >= TAIL_DONE_STREAK) {
                             markDelivered()
                             setBusy(sessionId, false)
+                            deadTurnReason(merged)?.let { failTurn(sessionId, it) }
                             persistCache(sessionId)
                             dbg("tail stop $sessionId: turn finished")
                             break

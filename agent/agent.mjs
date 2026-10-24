@@ -5,6 +5,7 @@ import path from "node:path";
 import http from "node:http";
 import https from "node:https";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -147,14 +148,53 @@ async function healthy() {
 }
 
 let serveProcess = null;
+let ensurePromise = null;
 
-async function ensureServer() {
+function portListening() {
+  return new Promise((resolve) => {
+    const s = net.connect({ port, host: "127.0.0.1" });
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      try { s.destroy(); } catch {}
+      resolve(ok);
+    };
+    s.once("connect", () => finish(true));
+    s.once("error", () => finish(false));
+    setTimeout(() => finish(false), 3000);
+  });
+}
+
+function ensureServer() {
+  if (!ensurePromise) {
+    ensurePromise = doEnsureServer().finally(() => {
+      ensurePromise = null;
+    });
+  }
+  return ensurePromise;
+}
+
+let lastMaybeEnsure = 0;
+function maybeEnsure() {
+  if (!autoStartServe) return;
+  const now = Date.now();
+  if (now - lastMaybeEnsure < 30000) return;
+  lastMaybeEnsure = now;
+  ensureServer().catch((e) => log("ensureServer error:", (e && e.message) || e));
+}
+
+async function doEnsureServer() {
   if (await healthy()) {
     log("opencode server already running at", ocUrl);
     return true;
   }
   if (!autoStartServe) {
     log("opencode server not reachable and autoStartServe is false");
+    return false;
+  }
+  if (await portListening()) {
+    log("port", port, "is occupied by another opencode instance, not spawning a duplicate");
     return false;
   }
   log("starting `opencode serve --port", port, "` ...");
@@ -171,6 +211,10 @@ async function ensureServer() {
   });
   serveProcess.stdout?.on("data", (d) => process.stdout.write("[serve] " + d));
   serveProcess.stderr?.on("data", (d) => process.stderr.write("[serve] " + d));
+  serveProcess.on("error", (e) => {
+    log("opencode serve spawn error:", (e && e.message) || e);
+    serveProcess = null;
+  });
   serveProcess.on("exit", (code) => {
     log("opencode serve exited with code", code);
     serveProcess = null;
@@ -239,11 +283,9 @@ async function handleReq(msg) {
   const started = Date.now();
 
   if (!(await healthy())) {
-    if (autoStartServe) await ensureServer();
-    if (!(await healthy())) {
-      wsSend({ t: "res", id, s: 503, b: { message: "opencode server offline" } });
-      return;
-    }
+    maybeEnsure();
+    wsSend({ t: "res", id, s: 503, b: { message: "opencode server offline" } });
+    return;
   }
 
   let init = { method };
@@ -594,7 +636,14 @@ async function deliverWake(entry) {
       log("ff-agent ->", sid, ar.status);
     }
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
-      if (await messageAdmitted(entry)) {
+      // Pre-POST admission is a duplicate guard for RETRIES and recovered
+      // entries only. On a fresh first attempt there is nothing of ours to
+      // collide with yet — matching the user simply sending the same text
+      // again here swallowed a real message (confirmed e2e: "acked, done,
+      // never reached the store"). Without per-wake client ids a repeat
+      // cannot be told from a duplicate, so we accept the rare double turn
+      // over the lost message.
+      if (attempt > 1 && (await messageAdmitted(entry))) {
         entry.state = "done";
         entry.error = null;
         saveQueue();
@@ -846,12 +895,27 @@ async function handleFileList(id, p, started) {
   }
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    const nodes = entries.map((e) => ({
-      name: e.name,
-      path: dir,
-      absolute: path.join(dir, e.name),
-      type: e.isDirectory() ? "directory" : "file",
-    }));
+    const nodes = await Promise.all(
+      entries.map(async (e) => {
+        let size = 0;
+        let modified = 0;
+        try {
+          const st = await fs.promises.stat(path.join(dir, e.name));
+          size = st.size;
+          modified = Math.floor(st.mtimeMs);
+        } catch {
+          /* race: entry vanished between readdir and stat */
+        }
+        return {
+          name: e.name,
+          path: dir,
+          absolute: path.join(dir, e.name),
+          type: e.isDirectory() ? "directory" : "file",
+          size,
+          modified,
+        };
+      }),
+    );
     wsSend({ t: "res", id, s: 200, b: nodes });
     log("res ->", id, 200, "file-list", nodes.length, dir, "ms=" + (Date.now() - started));
   } catch (e) {
@@ -1561,13 +1625,17 @@ setInterval(async () => {
   log("watchdog: opencode serve unhealthy, restarting");
   if (serveProcess) {
     try {
-      serveProcess.kill();
+      if (serveProcess.pid) {
+        spawn("taskkill", ["/pid", String(serveProcess.pid), "/t", "/f"], { stdio: "ignore" });
+      } else {
+        serveProcess.kill();
+      }
     } catch {
       /* ignore */
     }
     serveProcess = null;
   }
-  await ensureServer();
+  await ensureServer().catch((e) => log("ensureServer error:", (e && e.message) || e));
 }, 60000);
 
 async function main() {
@@ -1575,7 +1643,7 @@ async function main() {
   log("relay:", relayUrl);
   log("opencode:", ocUrl);
   if (directory) log("directory:", directory);
-  await ensureServer();
+  await ensureServer().catch((e) => log("ensureServer error:", (e && e.message) || e));
   loadQueue(); // receipts from a previous process
   recoverQueue(); // re-deliver wakes that never reached the store
   connectRelay();

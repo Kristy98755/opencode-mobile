@@ -19,6 +19,7 @@ object Keys {
     val PROVIDER = stringPreferencesKey("provider")
     val MODEL = stringPreferencesKey("model")
     val PROJECTS_MODE = booleanPreferencesKey("projects_mode")
+    val FILES_SORT = stringPreferencesKey("files_sort")
 }
 
 class SettingsRepository(private val context: Context) {
@@ -58,6 +59,13 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveProjectsMode(value: Boolean) {
         context.dataStore.edit { it[Keys.PROJECTS_MODE] = value }
+    }
+
+    /** "name" | "name_desc" | "size" | "size_desc" | "date" | "date_desc" */
+    suspend fun filesSort(): String = ds.first()[Keys.FILES_SORT] ?: "name"
+
+    suspend fun saveFilesSort(value: String) {
+        context.dataStore.edit { it[Keys.FILES_SORT] = value }
     }
 
     private fun draftKey(sessionId: String) = stringPreferencesKey("draft_$sessionId")
