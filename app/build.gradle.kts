@@ -13,8 +13,8 @@ android {
         applicationId = "kanami.isa.opencode.connect"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "1.0.4"
+        versionCode = 27
+        versionName = "1.0.5"
     }
 
     signingConfigs {
@@ -76,6 +76,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

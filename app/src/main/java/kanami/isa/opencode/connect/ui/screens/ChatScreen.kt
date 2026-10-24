@@ -358,6 +358,7 @@ fun ChatScreen(
                             Modifier.animateItem(),
                             shimmer = awaiting,
                             onExpand = { vm.expandMessage() },
+                            api = vm.api,
                         )
                     }
                     val lastRole = chat.messages.lastOrNull()?.info?.role

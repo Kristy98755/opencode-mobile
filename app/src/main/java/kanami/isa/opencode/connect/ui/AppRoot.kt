@@ -34,10 +34,27 @@ import kanami.isa.opencode.connect.ui.screens.SessionsScreen
 import kanami.isa.opencode.connect.ui.screens.SettingsScreen
 
 @Composable
-fun AppRoot(vm: AppViewModel, relayState: RelayState) {
+fun AppRoot(vm: AppViewModel, relayState: RelayState, onExitApp: () -> Unit = {}) {
     val nav = rememberNavController()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
+
+    // System back: navigate up while there is somewhere to go, and on the root
+    // screen require a double press within 2s to actually exit the app.
+    var lastBackAt by remember { mutableStateOf(0L) }
+    androidx.activity.compose.BackHandler(enabled = true) {
+        if (nav.previousBackStackEntry != null) {
+            nav.popBackStack()
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastBackAt < 2000) {
+                onExitApp()
+            } else {
+                lastBackAt = now
+                Toast.makeText(context, "Press back again to exit", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         vm.toast.collect { msg ->

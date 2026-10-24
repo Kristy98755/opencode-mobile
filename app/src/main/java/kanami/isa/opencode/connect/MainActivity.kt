@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
                         vm.openSessionFromNotification(sid)
                     }
                     val relayState by vm.relayState.collectAsStateWithLifecycle()
-                    AppRoot(vm = vm, relayState = relayState)
+                    AppRoot(vm = vm, relayState = relayState, onExitApp = { exitApp() })
                 }
             }
         }
@@ -73,5 +73,23 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         vmRef?.setForeground(false)
+    }
+
+    /** Real exit: drop the task and kill the process so nothing lingers. */
+    fun exitApp() {
+        try { vmRef?.disconnect() } catch (_: Exception) {}
+        finishAndRemoveTask()
+        kotlin.system.exitProcess(0)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Swiping the task out of Recents destroys the activity — kill the
+        // process for real instead of letting it linger "fast-resumable".
+        // Configuration changes (rotation) recreate the activity and must not.
+        if (!isChangingConfigurations) {
+            try { vmRef?.disconnect() } catch (_: Exception) {}
+            kotlin.system.exitProcess(0)
+        }
     }
 }

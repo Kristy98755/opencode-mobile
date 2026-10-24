@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kanami.isa.opencode.connect.net.MessageWithParts
+import kanami.isa.opencode.connect.net.OpencodeApi
 import kanami.isa.opencode.connect.net.Part
 import kotlinx.coroutines.delay
 import kanami.isa.opencode.connect.net.str
@@ -80,6 +81,7 @@ fun ChatMessage(
     modifier: Modifier = Modifier,
     shimmer: Boolean = false,
     onExpand: (() -> Unit)? = null,
+    api: OpencodeApi? = null,
 ) {
     val isUser = message.info.role == "user"
     SelectionContainer {
@@ -144,10 +146,14 @@ fun ChatMessage(
                         Spacer(Modifier.height(4.dp))
                     }
                     "file" -> {
-                        Chip(
-                            icon = Icons.Outlined.AttachFile,
-                            label = part.filename ?: part.url ?: "file",
-                        )
+                        if (hasMedia(part)) {
+                            MessageMedia(part, api)
+                        } else {
+                            Chip(
+                                icon = Icons.Outlined.AttachFile,
+                                label = part.filename ?: part.url ?: "file",
+                            )
+                        }
                         Spacer(Modifier.height(4.dp))
                     }
                     "patch" -> {
@@ -161,6 +167,10 @@ fun ChatMessage(
                         }
                     }
                     "agent" -> Chip(icon = Icons.Outlined.Code, label = part.text ?: "agent")
+                    "image" -> {
+                        MessageMedia(part, api)
+                        Spacer(Modifier.height(4.dp))
+                    }
                     else -> {}
                 }
             }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -80,6 +81,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kanami.isa.opencode.connect.AppViewModel
 import kanami.isa.opencode.connect.net.FileNode
@@ -455,6 +457,8 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
     viewer?.let { v ->
         AlertDialog(
             onDismissRequest = { vm.closeViewer() },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            modifier = Modifier.fillMaxWidth(0.94f).widthIn(max = 840.dp),
             title = {
                 Text(
                     pcName(v.path),

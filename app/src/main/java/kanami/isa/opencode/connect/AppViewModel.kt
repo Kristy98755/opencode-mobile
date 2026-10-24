@@ -306,6 +306,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _openSessionRequest.value = sessionId
     }
 
+    /**
+     * Turns running on the PC (host-run) never show up in the status map — but
+     * their lifecycle still streams through message.updated. Track it for EVERY
+     * session, phone- or PC-side: a fresh assistant message means "running", one
+     * with completed/error means "done", and setBusy() turns that transition into
+     * the "agent finished" notification when the app is in the background.
+     */
+    private fun trackTurnSignal(mi: MessageInfo) {
+        if (mi.role != "assistant") return
+        val done = mi.time?.get("completed") != null || mi.error != null
+        if (done) {
+            if (busyBySession[mi.sessionID] == true) setBusy(mi.sessionID, false)
+        } else if (busyBySession[mi.sessionID] != true) {
+            setBusy(mi.sessionID, true)
+        }
+    }
+
     fun clearOpenSessionRequest() {
         _openSessionRequest.value = null
     }
@@ -1021,7 +1038,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val info = payload["info"] as? JsonObject ?: return
                 runCatching {
                     val mi = json.decodeFromJsonElement<MessageInfo>(info)
-                    viewModelScope.launch { updateMessageInfo(mi) }
+                    viewModelScope.launch {
+                        trackTurnSignal(mi)
+                        updateMessageInfo(mi)
+                    }
                 }
             }
             "message.part.updated" -> {
