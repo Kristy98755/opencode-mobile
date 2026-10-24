@@ -67,6 +67,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -193,19 +194,27 @@ fun ChatScreen(
         }
     }
 
+    // The screen stays awake while a turn runs so long generations are watched
+    val screenView = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(chat.busy) {
+        screenView.keepScreenOn = chat.busy
+    }
+    DisposableEffect(Unit) {
+        onDispose { screenView.keepScreenOn = false }
+    }
+
     Scaffold(
-        bottomBar = {
-            Column {
-                // session controls live above the composer: the list gets the
-                // whole top of the screen — only the OS status bar insets it
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.background)
-                        .height(34.dp)
-                        .padding(horizontal = 4.dp),
-                ) {
+        topBar = {
+            // session controls: a thin row hugging the OS status bar
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .background(MaterialTheme.colorScheme.background)
+                    .height(36.dp)
+                    .padding(horizontal = 4.dp),
+            ) {
                     IconButton(onClick = {
                         vm.closeChat()
                         onBack()
@@ -265,8 +274,10 @@ fun ChatScreen(
                             },
                         )
                     }
-                }
-                Composer(
+            }
+        },
+        bottomBar = {
+            Composer(
                     draft = chat.draft,
                     onDraftChange = { vm.setDraft(it) },
                     busy = chat.busy,
@@ -299,8 +310,7 @@ fun ChatScreen(
                     selectedProvider = chat.model?.providerID ?: "",
                     selectedModel = chat.model?.id ?: "",
                     onSelectModel = { p, m -> vm.selectSessionModel(p, m) },
-                )
-            }
+            )
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -363,6 +373,23 @@ fun ChatScreen(
                         )
                     }
                     val lastRole = chat.messages.lastOrNull()?.info?.role
+                    if (chat.refreshing) {
+                        item(key = "tail-refresh") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            ) {
+                                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Updating…",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary,
+                                )
+                            }
+                        }
+                    }
                     if (showProcessing && lastRole == "user") {
                         item(key = "processing") {
                             // own layer above neighbors: the bubble must never
@@ -639,19 +666,29 @@ private fun Composer(
                 Icon(Icons.Outlined.Image, contentDescription = "Attach", tint = TextSecondary)
             }
             Spacer(Modifier.width(6.dp))
+            if (busy) {
+                // Stop lives in its own button: Send keeps working mid-turn and
+                // queues the message as a follow-up (desktop parity)
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(Surface2, CircleShape),
+                ) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Stop", tint = MaterialTheme.colorScheme.error)
+                }
+                Spacer(Modifier.width(6.dp))
+            }
             FilledIconButton(
-                onClick = { if (busy) onStop() else onSend() },
-                enabled = busy || draft.isNotBlank() || attachments.isNotEmpty(),
+                onClick = onSend,
+                enabled = draft.isNotBlank() || attachments.isNotEmpty(),
                 modifier = Modifier.size(44.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = if (busy) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = Color.White,
                 ),
             ) {
-                Icon(
-                    if (busy) Icons.Filled.Stop else Icons.AutoMirrored.Outlined.Send,
-                    contentDescription = if (busy) "Stop" else "Send",
-                )
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send")
             }
         }
     }

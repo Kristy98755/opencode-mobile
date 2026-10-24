@@ -84,6 +84,8 @@ data class ChatUiState(
     val hasMore: Boolean = true,
     val loadingMore: Boolean = false,
     val oldestLoadedId: String? = null,
+    /** Bottom loader: pulling fresh messages the remote store moved ahead with. */
+    val refreshing: Boolean = false,
 )
 
 data class FilesUiState(
@@ -266,6 +268,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             refreshSessions(force = true)
             refreshPendingQuestions()
             refreshBusyFromServer()
+            // A backgrounded process freezes its socket: turns that finished while
+            // we were away leave no poll behind — pull the fresh tail right away.
+            refreshChatTail()
             // A frozen/killed process lost its socket and every poll coroutine:
             // make sure the relay is actually up, then resume the busy polls.
             viewModelScope.launch {
@@ -314,6 +319,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Called when the user taps a notification for a finished session. */
     fun openSessionFromNotification(sessionId: String) {
         _openSessionRequest.value = sessionId
+        // tapping a notification for the chat already on screen must load the
+        // reply the frozen process never streamed
+        if (_chat.value.sessionId == sessionId) refreshChatTail()
+    }
+
+    private var lastFreshCheckAt = 0L
+
+    /**
+     * Pull the tail again and merge — cheap (one request) and enough to pick up
+     * messages that arrived while the process was frozen. The bottom loader in
+     * the chat shows while it runs. Never polls on its own.
+     */
+    fun refreshChatTail() {
+        val sid = _chat.value.sessionId ?: return
+        if (_chat.value.refreshing) return
+        viewModelScope.launch {
+            _chat.value = _chat.value.copy(refreshing = true)
+            try {
+                val page = api.messagesTail(sid)
+                val merged = mergeMessageLists(_chat.value.messages, page.messages)
+                if (_chat.value.sessionId == sid && merged != _chat.value.messages) {
+                    _chat.value = _chat.value.copy(messages = merged)
+                    persistCache(sid)
+                }
+            } catch (_: Exception) {
+                // silent: the loader stops; background polls keep working
+            } finally {
+                if (_chat.value.sessionId == sid) {
+                    _chat.value = _chat.value.copy(refreshing = false)
+                }
+            }
+        }
     }
 
     /**
@@ -1198,6 +1235,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 title = s.title ?: _chat.value.title,
                 model = s.model ?: _chat.value.model,
             )
+            // Remote moved ahead (a turn finished while we sat idle): pull the
+            // fresh tail so the reply shows without reopening the session.
+            val now = System.currentTimeMillis()
+            if (now - lastFreshCheckAt > 5000) {
+                lastFreshCheckAt = now
+                refreshChatTail()
+            }
         }
     }
 
