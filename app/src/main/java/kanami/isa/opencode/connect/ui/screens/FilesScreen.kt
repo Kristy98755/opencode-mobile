@@ -490,13 +490,6 @@ fun FilesScreen(vm: AppViewModel, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = { vm.closeViewer() }) { Text("Close") }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    val parent = pcParent(v.path)
-                    vm.closeViewer()
-                    if (parent != null) vm.loadDir(parent)
-                }) { Text("Open dir") }
-            },
         )
     }
 

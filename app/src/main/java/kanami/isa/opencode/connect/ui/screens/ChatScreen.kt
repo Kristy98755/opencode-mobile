@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,8 +25,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -190,85 +193,77 @@ fun ChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            chat.title ?: "Session",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .background(
-                                        when {
-                                            !agentOnline -> Color(0xFFF85149)
-                                            chat.busy -> Yellow
-                                            else -> Green
-                                        },
-                                        CircleShape,
-                                    ),
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            val statusText = when {
-                                !agentOnline -> "PC offline"
-                                chat.busy -> "working..."
-                                else -> "ready"
-                            }
-                            Text(
-                                statusText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary,
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = {
-                        vm.closeChat()
-                        onBack()
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = {
-                        val dir = vm.projectDirectory()
-                        if (dir.isNotEmpty()) onOpenFiles(dir)
-                        else vm.toast("No working directory known for this session")
-                    }) {
-                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Files")
-                    }
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "Menu")
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Files") },
-                            onClick = {
-                                menuOpen = false
-                                val dir = vm.projectDirectory()
-                                if (dir.isNotEmpty()) onOpenFiles(dir)
-                                else vm.toast("No working directory known for this session")
+            // Compact 36dp header row: the only thing above the list besides the
+            // status bar itself — no empty app-bar space.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .background(MaterialTheme.colorScheme.background)
+                    .height(36.dp)
+                    .padding(horizontal = 4.dp),
+            ) {
+                IconButton(onClick = {
+                    vm.closeChat()
+                    onBack()
+                }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    chat.title ?: "Session",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .background(
+                            when {
+                                !agentOnline -> Color(0xFFF85149)
+                                chat.busy -> Yellow
+                                else -> Green
                             },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Clear messages (local)") },
-                            onClick = {
-                                menuOpen = false
-                                vm.toast("Open sessions are kept on the server")
-                            },
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
+                            CircleShape,
+                        ),
+                )
+                Spacer(Modifier.width(10.dp))
+                IconButton(onClick = {
+                    val dir = vm.projectDirectory()
+                    if (dir.isNotEmpty()) onOpenFiles(dir)
+                    else vm.toast("No working directory known for this session")
+                }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.FolderOpen, contentDescription = "Files", modifier = Modifier.size(18.dp))
+                }
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Files") },
+                        onClick = {
+                            menuOpen = false
+                            val dir = vm.projectDirectory()
+                            if (dir.isNotEmpty()) onOpenFiles(dir)
+                            else vm.toast("No working directory known for this session")
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Clear messages (local)") },
+                        onClick = {
+                            menuOpen = false
+                            vm.toast("Open sessions are kept on the server")
+                        },
+                    )
+                }
+            }
         },
         bottomBar = {
             Composer(
@@ -338,7 +333,7 @@ fun ChatScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     if (chat.hasMore && chat.messages.isNotEmpty()) {
