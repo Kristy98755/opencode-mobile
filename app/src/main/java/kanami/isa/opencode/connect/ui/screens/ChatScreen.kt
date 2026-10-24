@@ -210,7 +210,6 @@ fun ChatScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.statusBars)
                     .background(MaterialTheme.colorScheme.background)
                     .height(36.dp)
                     .padding(horizontal = 4.dp),
@@ -666,29 +665,20 @@ private fun Composer(
                 Icon(Icons.Outlined.Image, contentDescription = "Attach", tint = TextSecondary)
             }
             Spacer(Modifier.width(6.dp))
-            if (busy) {
-                // Stop lives in its own button: Send keeps working mid-turn and
-                // queues the message as a follow-up (desktop parity)
-                IconButton(
-                    onClick = onStop,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(Surface2, CircleShape),
-                ) {
-                    Icon(Icons.Filled.Stop, contentDescription = "Stop", tint = MaterialTheme.colorScheme.error)
-                }
-                Spacer(Modifier.width(6.dp))
-            }
+            val stopMode = busy && draft.isBlank() && attachments.isEmpty()
             FilledIconButton(
-                onClick = onSend,
-                enabled = draft.isNotBlank() || attachments.isNotEmpty(),
+                onClick = { if (stopMode) onStop() else onSend() },
+                enabled = busy || draft.isNotBlank() || attachments.isNotEmpty(),
                 modifier = Modifier.size(44.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = if (stopMode) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                     contentColor = Color.White,
                 ),
             ) {
-                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send")
+                Icon(
+                    if (stopMode) Icons.Filled.Stop else Icons.AutoMirrored.Outlined.Send,
+                    contentDescription = if (stopMode) "Stop" else "Send",
+                )
             }
         }
     }
