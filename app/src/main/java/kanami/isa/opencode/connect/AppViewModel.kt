@@ -294,7 +294,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return url.isNotEmpty() && token.isNotEmpty()
     }
 
-    private fun setBusy(sessionId: String, busy: Boolean) {
+    /**
+     * @param evidence true only when the caller has positive proof the turn
+     *        ended (finished assistant with finish != tool-calls, confirmed
+     *        tail end, blocking POST returned). Status/idle heuristics clear
+     *        the flag silently: they are not proof and used to fire false
+     *        "Agent finished writing" notifications mid-generation.
+     */
+    private fun setBusy(sessionId: String, busy: Boolean, evidence: Boolean = false) {
         val prev = busyBySession[sessionId]
         busyBySession[sessionId] = busy
         _busySessions.value = busyBySession.toMap()
@@ -306,9 +313,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 error = if (busy) null else _chat.value.error,
             )
         }
-        // Notify when a turn ends: app in background, or a *different* session
-        // finishing while the user is busy elsewhere in the app (multisession).
-        if (prev == true && !busy && (!appInForeground || _chat.value.sessionId != sessionId)) {
+        // Notify only on proven turn end: app in background, or a *different*
+        // session finishing while the user is busy elsewhere (multisession).
+        if (evidence && prev == true && !busy && (!appInForeground || _chat.value.sessionId != sessionId)) {
             val title = _sessions.value.find { it.id == sessionId }?.title
                 ?: _chat.value.title
                 ?: "OpenCode"
@@ -354,17 +361,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Turns running on the PC (host-run) never show up in the status map — but
+     * Turns running on the PC (host-run) never show up in the status map - but
      * their lifecycle still streams through message.updated. Track it for EVERY
-     * session, phone- or PC-side: a fresh assistant message means "running", one
-     * with completed/error means "done", and setBusy() turns that transition into
-     * the "agent finished" notification when the app is in the background.
+     * session, phone- or PC-side: a fresh assistant message means "running".
+     * "done" requires a real end: completed AND finish != "tool-calls" - an
+     * intermediate tool step completes with tool-calls and must NOT clear busy
+     * (that bug raised false "Agent finished writing" mid-generation).
      */
     private fun trackTurnSignal(mi: MessageInfo) {
         if (mi.role != "assistant") return
-        val done = mi.time?.get("completed") != null || mi.error != null
+        val done = mi.error != null ||
+            (mi.time?.get("completed") != null && mi.finish != "tool-calls")
         if (done) {
-            if (busyBySession[mi.sessionID] == true) setBusy(mi.sessionID, false)
+            if (busyBySession[mi.sessionID] == true) setBusy(mi.sessionID, false, evidence = true)
         } else if (busyBySession[mi.sessionID] != true) {
             setBusy(mi.sessionID, true)
         }
@@ -785,7 +794,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { settings.setDraft(sessionId, "") }
         promptSentAt = 0L
         promptDraft = null
-        setBusy(sessionId, false)
+        // legacy POST blocks until the turn completes - a real end of generation
+        setBusy(sessionId, false, evidence = true)
         if (response != null) {
             upsertMessage(response)
         }
@@ -1148,7 +1158,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val sid = payload.str("sessionID") ?: return
                 val msg = errorText(payload)
                 viewModelScope.launch {
-                    setBusy(sid, false)
+                    // a turn that died with an error really ended
+                    setBusy(sid, false, evidence = true)
                     if (_chat.value.sessionId == sid) {
                         _chat.value = _chat.value.copy(error = msg)
                     }
@@ -1734,7 +1745,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (turnFinished(merged) && !page.inFlight) {
                         if (++doneStreak >= TAIL_DONE_STREAK) {
                             markDelivered()
-                            setBusy(sessionId, false)
+                            setBusy(sessionId, false, evidence = true)
                             deadTurnReason(merged)?.let { failTurn(sessionId, it) }
                             persistCache(sessionId)
                             dbg("tail stop $sessionId: turn finished")
@@ -1747,7 +1758,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     // Background session: only watch for the end of the turn.
                     if (turnFinished(page.messages) && !page.inFlight) {
                         if (++doneStreak >= TAIL_DONE_STREAK) {
-                            setBusy(sessionId, false)
+                            setBusy(sessionId, false, evidence = true)
                             dbg("tail stop $sessionId: turn finished (bg)")
                             break
                         }

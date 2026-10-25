@@ -13,8 +13,8 @@ android {
         applicationId = "kanami.isa.opencode.connect"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "1.0.10"
+        versionCode = 33
+        versionName = "1.0.11"
     }
 
     signingConfigs {
