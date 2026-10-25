@@ -211,19 +211,19 @@ fun ChatScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.background)
-                    .height(36.dp)
+                    .height(72.dp)
                     .padding(horizontal = 4.dp),
             ) {
-                    IconButton(onClick = {
-                        vm.closeChat()
-                        onBack()
-                    }, modifier = Modifier.size(30.dp)) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+                IconButton(onClick = {
+                    vm.closeChat()
+                    onBack()
+                }, modifier = Modifier.size(60.dp)) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
                     Text(
                         chat.title ?: "Session",
                         style = MaterialTheme.typography.titleSmall,
@@ -234,7 +234,7 @@ fun ChatScreen(
                     )
                     Box(
                         modifier = Modifier
-                            .size(7.dp)
+                            .size(14.dp)
                             .background(
                                 when {
                                     !agentOnline -> Color(0xFFF85149)
@@ -249,11 +249,11 @@ fun ChatScreen(
                         val dir = vm.projectDirectory()
                         if (dir.isNotEmpty()) onOpenFiles(dir)
                         else vm.toast("No working directory known for this session")
-                    }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Files", modifier = Modifier.size(18.dp))
+                    }, modifier = Modifier.size(60.dp)) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Files", modifier = Modifier.size(36.dp))
                     }
-                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(60.dp)) {
+                        Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", modifier = Modifier.size(36.dp))
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
